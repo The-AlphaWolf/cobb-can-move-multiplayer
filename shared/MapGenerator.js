@@ -128,9 +128,11 @@ class MapGenerator {
       { id: 'coal_5', x: 23 * 32 + 16, y: 4 * 32 + 16, collected: false }
     ];
 
+    // Each breaker powers the lamps of one side of the facility
+    const lampAt = (r) => ({ x: r.centerX * 32 + 16, y: r.centerY * 32 + 16 });
     const breakers = [
-      { id: 'breaker_0', x: 8 * 32 + 16, y: 3 * 32 + 16, active: false },
-      { id: 'breaker_1', x: 38 * 32 + 16, y: 25 * 32 + 16, active: false }
+      { id: 'breaker_0', x: 8 * 32 + 16, y: 3 * 32 + 16, active: false, lamps: [1, 5, 2].map(i => lampAt(rooms[i])) },
+      { id: 'breaker_1', x: 38 * 32 + 16, y: 25 * 32 + 16, active: false, lamps: [3, 6, 4].map(i => lampAt(rooms[i])) }
     ];
 
     return {
@@ -142,7 +144,8 @@ class MapGenerator {
         x: furnaceRoom.centerX * 32 + 16,
         y: furnaceRoom.centerY * 32 + 16,
         coalDeposited: 0,
-        coalRequired
+        coalRequired,
+        fuel: 0 // set when a round starts
       },
       exit: {
         x: exitRoom.centerX * 32 + 16,

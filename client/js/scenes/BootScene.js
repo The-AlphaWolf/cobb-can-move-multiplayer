@@ -15,6 +15,34 @@ class BootScene extends Phaser.Scene {
     this.createRockTexture();
     this.createCarrotTexture();
     this.createParticleTexture();
+    this.createLampTexture();
+    this.createTilesetTexture();
+  }
+
+  // Tilemap tileset: index matches the map grid value (0 empty, 1 floor, 2 wall)
+  createTilesetTexture() {
+    const canvas = this.textures.createCanvas('tileset', 96, 32);
+    const ctx = canvas.context;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, 32, 32);
+    ctx.drawImage(this.textures.get('tile_floor').getSourceImage(), 32, 0);
+    ctx.drawImage(this.textures.get('tile_wall').getSourceImage(), 64, 0);
+    canvas.refresh();
+  }
+
+  // Ceiling lamp (14x14), lit by breakers
+  createLampTexture() {
+    const canvas = this.textures.createCanvas('lamp_sprite', 14, 14);
+    const ctx = canvas.context;
+    ctx.fillStyle = '#3a3f4d';
+    ctx.fillRect(5, 0, 4, 3);
+    ctx.fillStyle = '#c9c2a3';
+    ctx.beginPath();
+    ctx.arc(7, 8, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff6d0';
+    ctx.fillRect(5, 6, 3, 3);
+    canvas.refresh();
   }
 
   create() {

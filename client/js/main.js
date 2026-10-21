@@ -58,7 +58,8 @@ document.addEventListener('DOMContentLoaded', () => {
     stopPhaser();
 
     const config = {
-      type: Phaser.WEBGL, // Required for Light2D pipeline
+      // Light2D darkness needs WebGL; without it Phaser falls back to Canvas and the map is fully lit
+      type: Phaser.AUTO,
       width: 960,
       height: 640,
       parent: 'game-container',
@@ -66,7 +67,11 @@ document.addEventListener('DOMContentLoaded', () => {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH
       },
-      pixelArt: true,
+      // pixelArt lives in `render` because supplying `render` stops Phaser reading it from the top level
+      render: {
+        pixelArt: true,
+        maxLights: CONSTANTS.LIGHTS.MAX_LIGHTS
+      },
       physics: {
         default: 'arcade',
         arcade: {

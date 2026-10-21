@@ -2,7 +2,7 @@
 // Run with: npm test
 const assert = require('assert');
 const RoomManager = require('../server/RoomManager');
-const { findPath, stepCobb } = require('../server/cobb');
+const { findPath, stepCobb, LIT } = require('../server/cobb');
 const { tickRoom, roundResult } = require('../server/game');
 const CONSTANTS = require('../shared/constants');
 
@@ -19,15 +19,19 @@ const b = room.players.get('b');
 const cobb = room.cobbs[0];
 let now = Date.now() + 10000; // past Cobb's start delay
 
-// 1. Paths reach every room, move one tile at a time, and never cut a wall corner
+// 1. Paths reach every room outside the fire's light, move one tile at a time,
+//    never cut a wall corner, and never enter the lit safe zone
 const start = { x: tile(cobb.x), y: tile(cobb.y) };
-room.mapData.rooms.forEach((r) => {
+assert(room.safeRadius > 0, 'furnace starts lit');
+assert.strictEqual(findPath(room.walk, start, { x: room.mapData.rooms[0].centerX, y: room.mapData.rooms[0].centerY }), null,
+  'Cobb must not path into the lit furnace hub');
+room.mapData.rooms.filter(r => r.id !== 0).forEach((r) => {
   const path = findPath(room.walk, start, { x: r.centerX, y: r.centerY });
   assert(path, `no path to ${r.name}`); // empty when Cobb already stands there
   let prev = start;
   path.forEach((p) => {
     const t = { x: tile(p.x), y: tile(p.y) };
-    assert(room.walk[t.y][t.x], 'path crosses a blocked tile');
+    assert(room.walk[t.y][t.x] && room.walk[t.y][t.x] !== LIT, 'path crosses a blocked or lit tile');
     const dx = t.x - prev.x;
     const dy = t.y - prev.y;
     assert(Math.abs(dx) <= 1 && Math.abs(dy) <= 1, 'path skips a tile');
@@ -41,6 +45,7 @@ a.isEscaped = b.isEscaped = true; // nobody to chase
 for (let i = 0; i < 2400; i++, now += 50) {
   stepCobb(cobb, room, 0.05, now);
   assert.strictEqual(room.mapData.grid[tile(cobb.y)][tile(cobb.x)], CONSTANTS.TILE_TYPES.FLOOR, 'Cobb walked into a wall');
+  assert.notStrictEqual(room.walk[tile(cobb.y)][tile(cobb.x)], LIT, 'Cobb wandered into the lit safe zone');
 }
 a.isEscaped = b.isEscaped = false;
 
@@ -60,6 +65,26 @@ a.y = cobb.y;
 assert.strictEqual(stepCobb(cobb, room, 0.05, now), a, 'looking-around Cobb should still grab');
 a.isDowned = false;
 Object.assign(cobb, { state: 'CHASE', targetId: 'a', pauseUntil: 0, lookUntil: 0 });
+
+// 3c. Players inside the burning furnace's light can't be chased or grabbed
+const f = room.mapData.furnace;
+const safeSpot = { x: f.x + 40, y: f.y };
+Object.assign(a, safeSpot);
+Object.assign(cobb, { x: safeSpot.x + 10, y: safeSpot.y, state: 'CHASE', targetId: 'a', pauseUntil: 0, lookUntil: 0 });
+assert.strictEqual(stepCobb(cobb, room, 0.05, now), null, 'grabbed inside the safe zone');
+assert.strictEqual(cobb.state, 'WANDER', 'Cobb should back off from the fire');
+
+// 3d. When the fire burns out the zone disappears
+f.fuel = 30;
+tickRoom(room, 50, now);
+assert.strictEqual(room.safeRadius, 0);
+assert(findPath(room.walk, start, { x: room.mapData.rooms[0].centerX, y: room.mapData.rooms[0].centerY }), 'hub reachable once dark');
+f.fuel = CONSTANTS.FURNACE.START_FUEL;
+tickRoom(room, 1, now);
+Object.assign(cobb, { x: room.mapData.cobbSpawn.x, y: room.mapData.cobbSpawn.y, state: 'CHASE', targetId: 'a', pauseUntil: 0, lookUntil: 0, path: [], goal: null });
+a.isDowned = false;
+a.x = cobb.x + 5;
+a.y = cobb.y;
 
 // 4. Touching Cobb downs the player and drops their coal where they fell
 const coal = room.mapData.coal[0];

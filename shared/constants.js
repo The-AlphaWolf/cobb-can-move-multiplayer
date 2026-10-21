@@ -53,9 +53,18 @@ const CONSTANTS = {
   LIGHTS: {
     LANTERN_RADIUS: 140,
     LANTERN_STEALTH: 75,
-    FURNACE_RADIUS: 240,
-    BRAZIER_RADIUS: 130,
-    AMBIENT_DARK: 0x050508
+    FURNACE_RADIUS: 240,   // at full fuel
+    EMBER_RADIUS: 70,      // a cold furnace still glows a little
+    BRAZIER_RADIUS: 130,   // room lamps powered by breakers
+    AMBIENT: 0x111118,
+    MAX_LIGHTS: 16
+  },
+  // The furnace burns coal; while it burns, its light is a zone Cobb won't enter
+  FURNACE: {
+    START_FUEL: 60000,     // ms of fire at the start of a round
+    FUEL_PER_COAL: 40000,
+    MAX_FUEL: 90000,
+    SAFE_SHARE: 0.75       // fraction of the light radius Cobb keeps out of
   },
   // Shown on the results screen after a failed level
   RULE_TIPS: {
@@ -86,6 +95,13 @@ const CONSTANTS = {
     BLIND_TRUST: 'BLIND TRUST'
   }
 };
+
+// Furnace light radius for a given amount of fuel; shared so server and client agree
+CONSTANTS.furnaceRadius = (fuel) => {
+  const L = CONSTANTS.LIGHTS;
+  return L.EMBER_RADIUS + (L.FURNACE_RADIUS - L.EMBER_RADIUS) * Math.min(1, fuel / CONSTANTS.FURNACE.MAX_FUEL);
+};
+CONSTANTS.safeRadius = (fuel) => (fuel > 0 ? CONSTANTS.furnaceRadius(fuel) * CONSTANTS.FURNACE.SAFE_SHARE : 0);
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = CONSTANTS;

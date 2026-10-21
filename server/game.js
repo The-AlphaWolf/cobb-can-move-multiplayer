@@ -1,7 +1,7 @@
 // Per-tick round rules: Cobb grabs, downed players, revives and bleed-outs.
 // Returns socket events as [name, data] pairs so it stays testable without sockets.
 const CONSTANTS = require('../shared/constants');
-const { stepCobb, isActive } = require('./cobb');
+const { stepCobb, isActive, buildWalkGrid } = require('./cobb');
 
 const P = CONSTANTS.PLAYER;
 const REVIVE_SLACK = 24; // latency allowance on top of REVIVE_RADIUS
@@ -21,8 +21,21 @@ function dropCoal(room, player) {
   return ['coal:dropped', { coalId: coal.id, x: coal.x, y: coal.y, droppedBy: player.id }];
 }
 
+// The fire burns down; its safe zone shrinks with it. Cobb's walk grid is rebuilt
+// only when the zone's edge crosses into a different tile ring.
+function burnFuel(room, dtMs) {
+  const f = room.mapData.furnace;
+  f.fuel = Math.max(0, f.fuel - dtMs);
+  const radius = CONSTANTS.safeRadius(f.fuel);
+  if (Math.floor(radius / 16) !== Math.floor((room.safeRadius || 0) / 16)) {
+    room.walk = buildWalkGrid(room.mapData, radius);
+  }
+  room.safeRadius = radius;
+}
+
 function tickRoom(room, dtMs, now) {
   const events = [];
+  burnFuel(room, dtMs);
 
   room.cobbs.forEach((cobb) => {
     const victim = stepCobb(cobb, room, dtMs / 1000, now);
@@ -65,6 +78,7 @@ function tickRoom(room, dtMs, now) {
 // What every client needs each tick: where the Cobbs are and how the downed are doing
 function snapshot(room) {
   return {
+    fuel: Math.round(room.mapData.furnace.fuel),
     cobbs: room.cobbs.map(c => ({
       id: c.id,
       x: Math.round(c.x),

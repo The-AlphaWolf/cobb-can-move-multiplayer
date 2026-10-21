@@ -48,7 +48,7 @@
         </div>
 
         <div class="controls-hint">
-          <span>[W,A,S,D] MOVE</span> • <span>[SHIFT] SPRINT</span> • <span>[E / SPACE] INTERACT</span> • <span>[M] FACILITY MAP</span>
+          <span>[W,A,S,D] MOVE</span> • <span>[SHIFT] SPRINT</span> • <span>[E / SPACE] INTERACT &amp; REVIVE</span> • <span>[M] FACILITY MAP</span>
         </div>
       </div>
 
@@ -119,10 +119,14 @@
     <div class="hud-top-bar">
       <div class="hud-badge coal-badge">
         <span class="badge-icon">⬛</span>
-        <span>COAL: <strong id="hud-coal-count">0 / 8</strong></span>
+        <span>COAL: <strong id="hud-coal-count">0 / 6</strong></span>
+      </div>
+      <div class="hud-badge fire-badge" title="Fuel left in the furnace. While it burns, Cobb won't enter its light.">
+        <span class="badge-icon">🔥</span>
+        <span>FIRE: <strong id="hud-fire">100%</strong></span>
       </div>
       <div class="hud-badge furnace-badge">
-        <span class="badge-icon">🔥</span>
+        <span class="badge-icon">🚪</span>
         <span>EXIT: <strong id="hud-exit-status" class="locked">LOCKED</strong></span>
       </div>
       <div id="hud-freeze-container" class="hud-badge freeze-badge hidden">

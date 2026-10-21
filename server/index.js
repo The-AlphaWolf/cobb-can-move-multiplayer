@@ -20,6 +20,7 @@ const CHAT_MAX_LENGTH = 100;
 const CHAT_MIN_INTERVAL = 400;
 const MOVE_MIN_INTERVAL = 30;
 const TICK_MS = 50; // 20 world updates a second
+const BREAKER_COOLDOWN = 500;
 
 // Serve static client files
 app.use(express.static(path.join(__dirname, '../client')));
@@ -197,6 +198,7 @@ io.on('connection', (socket) => {
     player.hasCoal = false;
     player.coalId = null;
     furnace.coalDeposited += 1;
+    furnace.fuel = Math.min(CONSTANTS.FURNACE.MAX_FUEL, furnace.fuel + CONSTANTS.FURNACE.FUEL_PER_COAL);
     if (furnace.coalDeposited >= furnace.coalRequired) {
       room.mapData.exit.unlocked = true;
     }
@@ -205,6 +207,7 @@ io.on('connection', (socket) => {
       depositedBy: socket.id,
       coalDeposited: furnace.coalDeposited,
       coalRequired: furnace.coalRequired,
+      fuel: furnace.fuel,
       exitUnlocked: room.mapData.exit.unlocked
     });
   });
@@ -215,6 +218,10 @@ io.on('connection', (socket) => {
     if (!room || !isActive(player)) return;
     const breaker = room.mapData.breakers.find(b => b.id === breakerId);
     if (!breaker || !near(player, breaker, CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
+    // A heavy switch: no strobing the lights or flooding the room with toggles
+    const now = Date.now();
+    if (now - (breaker.toggledAt || 0) < BREAKER_COOLDOWN) return;
+    breaker.toggledAt = now;
 
     breaker.active = !breaker.active;
     io.to(room.code).emit('breaker:updated', { breakerId, active: breaker.active, triggeredBy: socket.id });

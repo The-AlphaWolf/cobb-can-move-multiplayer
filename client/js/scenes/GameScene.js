@@ -27,8 +27,8 @@ class GameScene extends Phaser.Scene {
     const worldW = this.mapData.width * ts;
     const worldH = this.mapData.height * ts;
 
-    // 2. Build Dungeon Tilemap (Floors & Walls)
-    this.wallsGroup = this.physics.add.staticGroup();
+    // 2. Build Dungeon Tilemap (Floors & Walls), lit by Phaser's Light2D
+    this.lights.enable().setAmbientColor(window.CONSTANTS.LIGHTS.AMBIENT);
     this.buildDungeon();
 
     // 3. Create Central Furnace
@@ -53,8 +53,8 @@ class GameScene extends Phaser.Scene {
       .filter(p => p.id !== this.myId && !p.isEscaped)
       .forEach(p => this.addRemotePlayer(p));
 
-    // 9. Setup Darkness / Horror Vision System
-    this.createDarknessLayer(worldW, worldH);
+    // 9. Lights: lantern, furnace fire, exit, breaker-powered lamps
+    this.createLighting();
 
     // 10. Camera Setup with Smooth Following
     this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
@@ -86,40 +86,31 @@ class GameScene extends Phaser.Scene {
     // 14. Announce Rule Banner
     this.showRuleBanner(
       window.CONSTANTS.RULES.COBB_MOVE,
-      'Cobb can move. Find the coal, feed the furnace, and escape.'
+      'Find coal and feed the furnace. Cobb will not enter its light, but the fire burns down.'
     );
 
     // 15. Initial HUD Update
     this.updateHUD();
   }
 
+  // One tilemap layer: grid values double as tile indices (1 floor, 2 wall)
   buildDungeon() {
     const ts = window.CONSTANTS.TILE_SIZE;
-    for (let y = 0; y < this.mapData.height; y++) {
-      for (let x = 0; x < this.mapData.width; x++) {
-        const tile = this.mapData.grid[y][x];
-        const px = x * ts + ts / 2;
-        const py = y * ts + ts / 2;
-
-        if (tile === 1) {
-          this.add.image(px, py, 'tile_floor');
-        } else if (tile === 2) {
-          const wall = this.wallsGroup.create(px, py, 'tile_wall');
-          wall.refreshBody();
-        }
-      }
-    }
+    const map = this.make.tilemap({ data: this.mapData.grid, tileWidth: ts, tileHeight: ts });
+    const tiles = map.addTilesetImage('tileset', 'tileset', ts, ts, 0, 0);
+    this.layer = map.createLayer(0, tiles, 0, 0).setPipeline('Light2D');
+    this.layer.setCollision(window.CONSTANTS.TILE_TYPES.WALL);
   }
 
   createFurnace() {
     const f = this.mapData.furnace;
-    this.furnaceSprite = this.add.image(f.x, f.y, 'furnace_sprite');
+    this.furnaceSprite = this.add.image(f.x, f.y, 'furnace_sprite').setPipeline('Light2D');
     this.physics.add.existing(this.furnaceSprite, true);
   }
 
   createExitDoor() {
     const e = this.mapData.exit;
-    this.exitDoorSprite = this.add.image(e.x, e.y, 'exit_door');
+    this.exitDoorSprite = this.add.image(e.x, e.y, 'exit_door').setPipeline('Light2D');
     this.physics.add.existing(this.exitDoorSprite, true);
   }
 
@@ -129,17 +120,15 @@ class GameScene extends Phaser.Scene {
 
     this.mapData.coal.forEach(c => this.placeCoal(c));
 
-    this.breakerGroup = this.physics.add.staticGroup();
-    if (this.mapData.breakers) {
-      this.mapData.breakers.forEach(b => {
-        const sprite = this.breakerGroup.create(b.x, b.y, 'breaker_sprite');
-        sprite.breakerId = b.id;
-      });
-    }
+    this.breakerSprites = new Map();
+    this.mapData.breakers.forEach(b => {
+      const sprite = this.add.image(b.x, b.y, 'breaker_sprite').setPipeline('Light2D');
+      this.breakerSprites.set(b.id, sprite);
+    });
   }
 
   createPlayer() {
-    this.player = this.physics.add.sprite(this.me.x, this.me.y, 'player_sprite');
+    this.player = this.physics.add.sprite(this.me.x, this.me.y, 'player_sprite').setPipeline('Light2D');
     this.player.setTint(this.me.color);
     this.player.setCollideWorldBounds(true);
     this.player.body.setSize(18, 18);
@@ -151,12 +140,13 @@ class GameScene extends Phaser.Scene {
     this.player.isSprinting = false;
 
     // Collide with Walls & Furnace
-    this.physics.add.collider(this.player, this.wallsGroup);
+    this.physics.add.collider(this.player, this.layer);
     this.physics.add.collider(this.player, this.furnaceSprite);
   }
 
   addCobb(c) {
-    const sprite = this.add.sprite(c.x, c.y, 'cobb_sprite');
+    // Lit like everything else: in the dark, Cobb is a shape you barely see
+    const sprite = this.add.sprite(c.x, c.y, 'cobb_sprite').setPipeline('Light2D');
     sprite.setDepth(11); // Render on top
     sprite.setFlipX(c.flipX);
     sprite.targetX = c.x;
@@ -174,53 +164,47 @@ class GameScene extends Phaser.Scene {
     });
   }
 
-  // 9. Crisp Horror Darkness & Fog-of-War System
-  createDarknessLayer(worldW, worldH) {
-    // Subtle warm lantern halo around player
-    this.lanternGlow = this.add.circle(this.player.x, this.player.y, 85, 0xffaa22, 0.12);
-    this.lanternGlow.setDepth(5);
-
-    // Warm fire halo around furnace
+  createLighting() {
+    const L = window.CONSTANTS.LIGHTS;
     const f = this.mapData.furnace;
-    this.furnaceGlow = this.add.circle(f.x, f.y, 110, 0xff5511, 0.18);
-    this.furnaceGlow.setDepth(5);
-
-    this.tweens.add({
-      targets: this.furnaceGlow,
-      scaleX: 1.15,
-      scaleY: 1.15,
-      alpha: 0.25,
-      duration: 900,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut'
-    });
-
-    // Subtle hallway beacon lights at room doorways
-    const doorways = [
-      { x: 22.5 * 32, y: 10.5 * 32 }, // North door
-      { x: 22.5 * 32, y: 25.5 * 32 }, // South door
-      { x: 15.5 * 32, y: 18.5 * 32 }, // West door
-      { x: 30.5 * 32, y: 18.5 * 32 }  // East door
-    ];
-
-    doorways.forEach(d => {
-      const beacon = this.add.circle(d.x, d.y, 45, 0xffaa33, 0.08);
-      beacon.setDepth(4);
-    });
-
-    // Exit blast door beacon (red locked / green unlocked)
     const e = this.mapData.exit;
-    this.exitBeacon = this.add.circle(e.x, e.y, 55, 0xff3344, 0.15);
-    this.exitBeacon.setDepth(4);
+    this.lanternLight = this.lights.addLight(this.player.x, this.player.y, L.LANTERN_RADIUS, 0xffcf8a, 1.2);
+    this.furnaceLight = this.lights.addLight(f.x, f.y, window.CONSTANTS.furnaceRadius(f.fuel), 0xff7a2a, 1.6);
+    this.exitLight = this.lights.addLight(e.x, e.y, 70, 0xff3344, 1.2);
+
+    // Lamps hang in rooms and only shine while their breaker is on
+    this.lampLights = new Map();
+    this.mapData.breakers.forEach((b) => {
+      this.lampLights.set(b.id, b.lamps.map((l) => {
+        this.add.image(l.x, l.y, 'lamp_sprite').setPipeline('Light2D').setDepth(3);
+        return this.lights.addLight(l.x, l.y, L.BRAZIER_RADIUS, 0xfff0c0, 0);
+      }));
+      this.setBreaker(b.id, b.active);
+    });
+    this.setExitUnlocked(e.unlocked);
   }
 
-  updateDarkness() {
-    if (this.lanternGlow && this.player) {
-      this.lanternGlow.setPosition(this.player.x, this.player.y);
-      // Subtle lantern flicker
-      this.lanternGlow.alpha = 0.10 + Math.sin(this.time.now / 150) * 0.04;
-    }
+  setBreaker(id, active) {
+    this.mapData.breakers.find(b => b.id === id).active = active;
+    this.lampLights.get(id).forEach(light => light.setIntensity(active ? 1.6 : 0));
+    this.breakerSprites.get(id).setTint(active ? 0x7dffa8 : 0xffffff);
+  }
+
+  setExitUnlocked(unlocked) {
+    this.mapData.exit.unlocked = unlocked;
+    this.exitLight.setColor(unlocked ? 0x38ef7d : 0xff3344);
+  }
+
+  // Flicker the flames; the furnace's reach follows its fuel
+  updateLights() {
+    const t = this.time.now;
+    const lanternOn = this.status === 'active' || this.status === 'downed';
+    this.lanternLight.setPosition(this.player.x, this.player.y);
+    this.lanternLight.setRadius(this.status === 'downed' ? 60 : window.CONSTANTS.LIGHTS.LANTERN_RADIUS);
+    this.lanternLight.setIntensity(lanternOn ? 1.9 + Math.sin(t / 150) * 0.12 : 0);
+    const fuel = this.mapData.furnace.fuel;
+    this.furnaceLight.setRadius(window.CONSTANTS.furnaceRadius(fuel) * (1 + Math.sin(t / 200) * 0.03));
+    this.furnaceLight.setIntensity(fuel > 0 ? 2.4 : 1.0);
   }
 
   update(time, delta) {
@@ -237,7 +221,7 @@ class GameScene extends Phaser.Scene {
     }
     this.updateRemotePlayers(delta);
     this.updateCobbs(delta);
-    this.updateDarkness();
+    this.updateLights();
     this.updateMinimap(delta);
 
     // Network Sync (20 ticks/sec)
@@ -254,7 +238,9 @@ class GameScene extends Phaser.Scene {
   }
 
   addRemotePlayer(p) {
-    const remote = this.add.sprite(p.x, p.y, 'player_sprite');
+    const remote = this.add.sprite(p.x, p.y, 'player_sprite').setPipeline('Light2D');
+    // Teammates carry lanterns too, so you can spot them across a dark room
+    remote.light = this.lights.addLight(p.x, p.y, window.CONSTANTS.LIGHTS.LANTERN_RADIUS, 0xffcf8a, 1.1);
     remote.setDepth(10);
     remote.setTint(p.color);
     remote.setFlipX(!!p.flipX);
@@ -279,6 +265,7 @@ class GameScene extends Phaser.Scene {
     const remote = this.remotePlayers.get(id);
     if (!remote) return;
     remote.label.destroy();
+    this.lights.removeLight(remote.light);
     remote.destroy();
     this.remotePlayers.delete(id);
     if (this.spectating === remote) this.spectate();
@@ -291,6 +278,10 @@ class GameScene extends Phaser.Scene {
       remote.x += (remote.targetX - remote.x) * t;
       remote.y += (remote.targetY - remote.y) * t;
       remote.label.setPosition(remote.x, remote.y - 14);
+      remote.light.setPosition(remote.x, remote.y);
+      // Downed lanterns gutter; the dead carry none
+      remote.light.setRadius(remote.state === 'downed' ? 60 : window.CONSTANTS.LIGHTS.LANTERN_RADIUS);
+      remote.light.setIntensity(remote.state === 'dead' ? 0 : 1.7);
 
       let text = remote.name;
       if (remote.state === 'dead') {
@@ -374,7 +365,6 @@ class GameScene extends Phaser.Scene {
     } else if (state === 'escaped') {
       this.player.setVisible(false);
       this.player.body.enable = false;
-      this.lanternGlow.setVisible(false);
       this.showRuleBanner('YOU ESCAPED', 'Waiting for the others to get out...');
       this.spectate();
     }
@@ -464,7 +454,15 @@ class GameScene extends Phaser.Scene {
       }
     }
 
-    // 3. Exit Escape
+    // 3. Breakers switch a wing's lamps on or off
+    for (const b of this.mapData.breakers) {
+      if (Phaser.Math.Distance.Between(px, py, b.x, b.y) <= radius) {
+        this.socket.emit('breaker:toggle', { breakerId: b.id });
+        return;
+      }
+    }
+
+    // 4. Exit Escape
     if (this.mapData.exit.unlocked) {
       const eDist = Phaser.Math.Distance.Between(px, py, this.exitDoorSprite.x, this.exitDoorSprite.y);
       if (eDist <= radius + 15) {
@@ -525,6 +523,18 @@ class GameScene extends Phaser.Scene {
       heldElem.textContent = this.player.hasCoal ? '⬛ COAL CHUNK' : 'HANDS EMPTY';
       heldElem.style.color = this.player.hasCoal ? 'var(--accent-amber)' : 'var(--text-main)';
     }
+    this.updateFireHUD();
+  }
+
+  // Fuel left in the furnace; under a quarter, the safe zone is about to shrink to nothing
+  updateFireHUD() {
+    const fireElem = document.getElementById('hud-fire');
+    const pct = Math.round((this.mapData.furnace.fuel / window.CONSTANTS.FURNACE.MAX_FUEL) * 100);
+    const text = pct > 0 ? `${pct}%` : 'OUT';
+    if (fireElem.textContent !== text) {
+      fireElem.textContent = text;
+      fireElem.className = pct < 25 ? 'locked' : '';
+    }
   }
 
   setupNetworkHandlers() {
@@ -558,7 +568,11 @@ class GameScene extends Phaser.Scene {
         this.updateHUD();
       },
 
+      'breaker:updated': (data) => this.setBreaker(data.breakerId, data.active),
+
       'world:tick': (data) => {
+        this.mapData.furnace.fuel = data.fuel;
+        this.updateFireHUD();
         data.cobbs.forEach((c) => {
           const sprite = this.cobbs.get(c.id) || this.addCobb(c);
           sprite.targetX = c.x;
@@ -602,7 +616,8 @@ class GameScene extends Phaser.Scene {
       'furnace:updated': (data) => {
         this.mapData.furnace.coalDeposited = data.coalDeposited;
         this.mapData.exit.unlocked = data.exitUnlocked;
-        if (this.exitBeacon && data.exitUnlocked) this.exitBeacon.fillColor = 0x38ef7d;
+        this.mapData.furnace.fuel = data.fuel;
+        this.setExitUnlocked(data.exitUnlocked);
         if (data.depositedBy === this.myId) {
           this.player.hasCoal = false;
           if (data.exitUnlocked) {
@@ -631,7 +646,7 @@ class GameScene extends Phaser.Scene {
       return;
     }
     if (!sprite) {
-      sprite = this.coalGroup.create(c.x, c.y, 'coal_sprite');
+      sprite = this.coalGroup.create(c.x, c.y, 'coal_sprite').setPipeline('Light2D');
       sprite.coalId = c.id;
       this.coalMap.set(c.id, sprite);
     }
@@ -645,7 +660,9 @@ class GameScene extends Phaser.Scene {
 
     this.mapData.furnace.coalDeposited = room.mapData.furnace.coalDeposited;
     this.mapData.exit.unlocked = room.mapData.exit.unlocked;
-    if (this.mapData.exit.unlocked) this.exitBeacon.fillColor = 0x38ef7d;
+    this.mapData.furnace.fuel = room.mapData.furnace.fuel;
+    this.setExitUnlocked(room.mapData.exit.unlocked);
+    room.mapData.breakers.forEach(b => this.setBreaker(b.id, b.active));
 
     room.players.forEach((p) => {
       const state = p.isEscaped ? 'escaped' : p.isDead ? 'dead' : p.isDowned ? 'downed' : 'active';
@@ -696,21 +713,38 @@ class GameScene extends Phaser.Scene {
     ctx.fillStyle = '#05060a';
     ctx.fillRect(0, 0, w, h);
 
-    // 1. Draw floor rooms & corridors
+    // The radar only knows what your lantern has shown you
+    const mw = this.mapData.width;
+    if (!this.explored) this.explored = new Uint8Array(mw * this.mapData.height);
+    const seen = (px, py) => this.explored[Math.floor(py / 32) * mw + Math.floor(px / 32)] === 1;
+    if (this.status === 'active' || this.status === 'downed') {
+      const r = Math.floor(window.CONSTANTS.LIGHTS.LANTERN_RADIUS / 32);
+      const tx = Math.floor(this.player.x / 32);
+      const ty = Math.floor(this.player.y / 32);
+      for (let y = Math.max(0, ty - r); y <= Math.min(this.mapData.height - 1, ty + r); y++) {
+        for (let x = Math.max(0, tx - r); x <= Math.min(mw - 1, tx + r); x++) {
+          if (Math.hypot(x - tx, y - ty) <= r) this.explored[y * mw + x] = 1;
+        }
+      }
+    }
+
+    // 1. Draw explored floor rooms & corridors
+    ctx.fillStyle = '#1c2130';
     for (let y = 0; y < this.mapData.height; y++) {
-      for (let x = 0; x < this.mapData.width; x++) {
-        if (this.mapData.grid[y][x] === 1) {
-          ctx.fillStyle = '#1c2130';
+      for (let x = 0; x < mw; x++) {
+        if (this.mapData.grid[y][x] === 1 && this.explored[y * mw + x]) {
           ctx.fillRect(x * scale, y * scale, scale, scale);
         }
       }
     }
 
-    // 2. Draw Exit Blast Door
+    // 2. Draw Exit Blast Door once found
     const ex = Math.floor(this.mapData.exit.x / 32) * scale;
     const ey = Math.floor(this.mapData.exit.y / 32) * scale;
-    ctx.fillStyle = this.mapData.exit.unlocked ? '#38ef7d' : '#ff3344';
-    ctx.fillRect(ex - 2, ey - 2, scale + 4, scale + 4);
+    if (seen(this.mapData.exit.x, this.mapData.exit.y)) {
+      ctx.fillStyle = this.mapData.exit.unlocked ? '#38ef7d' : '#ff3344';
+      ctx.fillRect(ex - 2, ey - 2, scale + 4, scale + 4);
+    }
 
     // 3. Draw Furnace
     const fx = Math.floor(this.mapData.furnace.x / 32) * scale;
@@ -721,7 +755,7 @@ class GameScene extends Phaser.Scene {
     // 4. Draw Coal Chunks
     ctx.fillStyle = '#ffaa22';
     this.coalMap.forEach((sprite) => {
-      if (sprite.active) {
+      if (sprite.active && seen(sprite.x, sprite.y)) {
         const cx = Math.floor(sprite.x / 32) * scale;
         const cy = Math.floor(sprite.y / 32) * scale;
         ctx.fillRect(cx + 1, cy + 1, scale - 2, scale - 2);
@@ -729,9 +763,10 @@ class GameScene extends Phaser.Scene {
     });
 
     // 5. Draw Breakers
-    ctx.fillStyle = '#00d2ff';
     if (this.mapData.breakers) {
       this.mapData.breakers.forEach((b) => {
+        if (!seen(b.x, b.y)) return;
+        ctx.fillStyle = b.active ? '#7dffa8' : '#00d2ff';
         const bx = Math.floor(b.x / 32) * scale;
         const by = Math.floor(b.y / 32) * scale;
         ctx.fillRect(bx + 1, by + 1, scale - 2, scale - 2);

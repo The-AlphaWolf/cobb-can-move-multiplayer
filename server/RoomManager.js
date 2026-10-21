@@ -99,7 +99,9 @@ class RoomManager {
   startRound(room) {
     const now = Date.now();
     room.mapData = this.generateMap();
-    room.walk = buildWalkGrid(room.mapData);
+    room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
+    room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
+    room.walk = buildWalkGrid(room.mapData, room.safeRadius);
     room.cobbs = createCobbs(room.mapData, now);
     room.state = 'PLAYING';
     room.stats.startTime = now;

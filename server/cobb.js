@@ -10,24 +10,32 @@ const toTile = (v) => Math.floor(v / TS);
 const tileCenter = (t) => t * TS + TS / 2;
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
-// walk[y][x] is true where Cobb can stand. The furnace blocks the tiles under its sprite.
-function buildWalkGrid(mapData) {
-  const walk = mapData.grid.map(row => row.map(t => t === FLOOR));
-  const fx = toTile(mapData.furnace.x);
-  const fy = toTile(mapData.furnace.y);
-  for (let y = fy - 1; y <= fy + 1; y++) {
-    for (let x = fx - 1; x <= fx + 1; x++) walk[y][x] = false;
-  }
-  return walk;
+const BLOCKED = 0;
+const OPEN = 1;
+const LIT = 2; // inside the burning furnace's safe zone: Cobb may only walk out of it
+
+// walk[y][x]: BLOCKED for walls and the tiles under the furnace sprite, LIT inside the safe zone
+function buildWalkGrid(mapData, safeRadius = 0) {
+  const f = mapData.furnace;
+  const fx = toTile(f.x);
+  const fy = toTile(f.y);
+  return mapData.grid.map((row, y) => row.map((t, x) => {
+    if (t !== FLOOR || (Math.abs(x - fx) <= 1 && Math.abs(y - fy) <= 1)) return BLOCKED;
+    return Math.hypot(tileCenter(x) - f.x, tileCenter(y) - f.y) < safeRadius ? LIT : OPEN;
+  }));
 }
 
+const inSafeZone = (room, p) => dist(p, room.mapData.furnace) < (room.safeRadius || 0);
+
 // Breadth-first search over 8 directions; diagonals only where both side tiles are open,
-// so Cobb never cuts a wall corner. Returns tile centres from the step after `from` to `to`.
+// so Cobb never cuts a wall corner. Lit tiles can be crossed only on the way out of the
+// safe zone, never into it. Returns tile centres from the step after `from` to `to`.
 // ponytail: plain BFS per repath, fine for a 46x36 grid; switch to A* if maps grow a lot.
 function findPath(walk, from, to) {
   const h = walk.length;
   const w = walk[0].length;
-  const open = (x, y) => x >= 0 && y >= 0 && x < w && y < h && walk[y][x];
+  const cell = (x, y) => (x >= 0 && y >= 0 && x < w && y < h ? walk[y][x] : BLOCKED);
+  const open = (x, y) => cell(x, y) !== BLOCKED;
   // A point on the furnace, or a player hugging it, can sit on a blocked tile;
   // use the nearest open tile within two steps instead
   const snap = (t) => {
@@ -58,6 +66,7 @@ function findPath(walk, from, to) {
       const nx = cx + dx;
       const ny = cy + dy;
       if (!open(nx, ny) || (dx && dy && (!open(cx + dx, cy) || !open(cx, cy + dy)))) continue;
+      if (cell(nx, ny) === LIT && cell(cx, cy) !== LIT) continue;
       const n = ny * w + nx;
       if (prev[n] !== -1) continue;
       prev[n] = cur;
@@ -92,9 +101,13 @@ function createCobbs(mapData, now) {
 
 const isActive = (p) => p.role === 'SURVIVOR' && !p.isEscaped && !p.isDowned && !p.isDead;
 
+// Returns false (and drops the goal) when there is no way there, so Cobb never walks
+// straight through walls or into the safe zone
 function setGoal(cobb, walk, goal) {
-  cobb.goal = { x: goal.x, y: goal.y };
-  cobb.path = findPath(walk, { x: toTile(cobb.x), y: toTile(cobb.y) }, { x: toTile(goal.x), y: toTile(goal.y) }) || [];
+  const path = findPath(walk, { x: toTile(cobb.x), y: toTile(cobb.y) }, { x: toTile(goal.x), y: toTile(goal.y) });
+  cobb.path = path || [];
+  cobb.goal = path ? { x: goal.x, y: goal.y } : null;
+  return !!path;
 }
 
 function pickWanderRoom(cobb, room) {
@@ -106,11 +119,14 @@ function pickWanderRoom(cobb, room) {
   setGoal(cobb, room.walk, { x: tileCenter(r.centerX), y: tileCenter(r.centerY) });
 }
 
-function nearestActive(cobb, players, radius) {
+// Players Cobb can go after: standing, and not sheltering in the furnace's light
+const isPrey = (room, p) => isActive(p) && !inSafeZone(room, p);
+
+function nearestPrey(cobb, room, radius) {
   let best = null;
-  players.forEach((p) => {
+  room.players.forEach((p) => {
     const d = dist(cobb, p);
-    if (isActive(p) && d <= radius && (!best || d < best.d)) best = { p, d };
+    if (isPrey(room, p) && d <= radius && (!best || d < best.d)) best = { p, d };
   });
   return best && best.p;
 }
@@ -150,7 +166,7 @@ function stepCobb(cobb, room, dt, now) {
   const players = room.players;
 
   if (cobb.state !== 'CHASE') {
-    const seen = nearestActive(cobb, players, C.AGGRO_RADIUS);
+    const seen = nearestPrey(cobb, room, C.AGGRO_RADIUS);
     if (seen) {
       cobb.state = 'CHASE';
       cobb.targetId = seen.id;
@@ -165,14 +181,20 @@ function stepCobb(cobb, room, dt, now) {
       // Lost them: walk to where they were last seen and look around
       cobb.state = 'SEARCH';
       cobb.targetId = null;
-      setGoal(cobb, room.walk, cobb.lastSeen || cobb);
+      if (!setGoal(cobb, room.walk, cobb.lastSeen || cobb)) cobb.state = 'WANDER';
+    } else if (inSafeZone(room, target)) {
+      // They reached the fire; Cobb backs off
+      cobb.state = 'WANDER';
+      cobb.targetId = null;
+      cobb.goal = null;
+      cobb.path = [];
     } else {
       speed = C.CHASE_SPEED;
       cobb.lastSeen = { x: target.x, y: target.y };
       if (now >= cobb.repathAt) {
         cobb.repathAt = now + C.REPATH_INTERVAL;
-        setGoal(cobb, room.walk, target);
-      } else {
+        if (!setGoal(cobb, room.walk, target)) cobb.state = 'WANDER';
+      } else if (cobb.goal) {
         cobb.goal = { x: target.x, y: target.y };
       }
     }
@@ -194,7 +216,7 @@ function stepCobb(cobb, room, dt, now) {
   }
 
   for (const p of players.values()) {
-    if (isActive(p) && now >= (p.safeUntil || 0) && dist(cobb, p) <= C.NORMAL_REACH) {
+    if (isPrey(room, p) && now >= (p.safeUntil || 0) && dist(cobb, p) <= C.NORMAL_REACH) {
       // Grabbed: Cobb lingers, then loses interest and wanders off
       cobb.state = 'WANDER';
       cobb.targetId = null;
@@ -206,4 +228,4 @@ function stepCobb(cobb, room, dt, now) {
   return null;
 }
 
-module.exports = { buildWalkGrid, findPath, createCobbs, stepCobb, isActive };
+module.exports = { buildWalkGrid, findPath, createCobbs, stepCobb, isActive, LIT };
