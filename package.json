@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "test": "node test/game.js && node test/rules.js && node test/modes.js && node test/smoke.js"
+    "test": "node test/game.js && node test/rules.js && node test/modes.js && node test/map.js && node test/smoke.js"
   },
   "dependencies": {
     "express": "^4.19.2",

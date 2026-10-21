@@ -19,8 +19,19 @@ class RoomManager {
     return this.rooms.has(code) ? this.generateRoomCode() : code;
   }
 
-  generateMap() {
-    return new MapGenerator(Date.now()).generate(CONSTANTS.MAP.DEFAULT_WIDTH, CONSTANTS.MAP.DEFAULT_HEIGHT);
+  // Level 1 is the fixed intro facility; later levels get a fresh layout, bigger for bigger teams
+  generateMap(level = 1, playerCount = 1) {
+    const gen = new MapGenerator((Date.now() ^ (Math.random() * 0x100000000)) >>> 0);
+    if (level <= 1) return gen.classic();
+    const size = playerCount > 2 ? CONSTANTS.MAP.LARGE : CONSTANTS.MAP.SMALL;
+    const fireZone = CONSTANTS.LIGHTS.FURNACE_RADIUS * CONSTANTS.FURNACE.SAFE_SHARE; // the zone at its largest
+    try {
+      return gen.generate(size.width, size.height, { coalCount: size.coal, fireZone });
+    } catch (err) {
+      // Never seen in 600 test seeds, but a round must always start
+      console.error(err.message);
+      return gen.classic();
+    }
   }
 
   createRoom(hostSocketId, options = {}) {
@@ -109,7 +120,7 @@ class RoomManager {
   // Fresh map, Cobb and player state for a new round
   startRound(room) {
     const now = Date.now();
-    room.mapData = this.generateMap();
+    room.mapData = this.generateMap(room.level, room.players.size);
     room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
     room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
     room.walk = buildWalkGrid(room.mapData, room.safeRadius);

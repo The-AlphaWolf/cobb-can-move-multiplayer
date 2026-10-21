@@ -1004,6 +1004,9 @@ class GameScene extends Phaser.Scene {
   initMinimap() {
     this.minimapCanvas = document.getElementById('minimap-canvas');
     if (!this.minimapCanvas) return;
+    // 4 px per tile, whatever this level's map size is
+    this.minimapCanvas.width = this.mapData.width * 4;
+    this.minimapCanvas.height = this.mapData.height * 4;
     this.minimapCtx = this.minimapCanvas.getContext('2d');
     this.minimapUpdateTimer = 0;
 
@@ -1026,7 +1029,7 @@ class GameScene extends Phaser.Scene {
     const ctx = this.minimapCtx;
     const w = this.minimapCanvas.width;
     const h = this.minimapCanvas.height;
-    const scale = 4; // 4px per tile (46 * 4 = 184, 36 * 4 = 144)
+    const scale = 4; // px per tile; initMinimap sizes the canvas to match
 
     ctx.fillStyle = '#05060a';
     ctx.fillRect(0, 0, w, h);

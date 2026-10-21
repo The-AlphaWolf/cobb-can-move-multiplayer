@@ -1,9 +1,9 @@
 // Shared constants for COBB CAN MOVE (loaded by the server and the browser)
 const CONSTANTS = {
   TILE_SIZE: 32,
-  MAP: {
-    DEFAULT_WIDTH: 46,
-    DEFAULT_HEIGHT: 36
+  MAP: {                   // procedural sizes (level 1 uses the fixed 46x36 facility)
+    SMALL: { width: 46, height: 36, coal: 6 },   // 1-2 players
+    LARGE: { width: 54, height: 42, coal: 8 }    // 3-4 players
   },
   TILE_TYPES: {
     EMPTY: 0,
