@@ -5,7 +5,7 @@ const path = require('path');
 const RoomManager = require('./RoomManager');
 const CONSTANTS = require('../shared/constants');
 const { isActive } = require('./cobb');
-const { tickRoom, snapshot, roundResult, dropCoal } = require('./game');
+const { tickRoom, snapshot, roundResult, dropCoal, makeNoise, recordTrail, throwRock } = require('./game');
 
 const app = express();
 const server = http.createServer(app);
@@ -21,6 +21,8 @@ const CHAT_MIN_INTERVAL = 400;
 const MOVE_MIN_INTERVAL = 30;
 const TICK_MS = 50; // 20 world updates a second
 const BREAKER_COOLDOWN = 500;
+const THROW_COOLDOWN = 600;
+const SPRINT_NOISE_INTERVAL = 400;
 
 // Serve static client files
 app.use(express.static(path.join(__dirname, '../client')));
@@ -141,7 +143,7 @@ io.on('connection', (socket) => {
   });
 
   // Player Movement Sync (client owns its position, server caps the speed)
-  on('player:move', ({ x, y, flipX, isSprinting }) => {
+  on('player:move', ({ x, y, flipX, isSprinting, lanternDim }) => {
     const { room, player } = current(true);
     if (!room || !isActive(player) || !isNum(x) || !isNum(y)) return;
 
@@ -163,14 +165,22 @@ io.on('connection', (socket) => {
     player.y = y;
     player.flipX = flipX === true;
     player.isSprinting = isSprinting === true;
+    player.lanternDim = lanternDim === true;
     player.lastMoveAt = now;
+    recordTrail(player, now);
+    // Footsteps carry when you run
+    if (player.isSprinting && now - (player.noiseAt || 0) >= SPRINT_NOISE_INTERVAL) {
+      player.noiseAt = now;
+      emitEvent(room, makeNoise(room, x, y, CONSTANTS.NOISE.SPRINT, now));
+    }
 
     socket.to(room.code).emit('player:moved', {
       id: socket.id,
       x,
       y,
       flipX: player.flipX,
-      isSprinting: player.isSprinting
+      isSprinting: player.isSprinting,
+      lanternDim: player.lanternDim
     });
   });
 
@@ -186,6 +196,7 @@ io.on('connection', (socket) => {
     player.hasCoal = true;
     player.coalId = coal.id;
     io.to(room.code).emit('coal:updated', { coalId, collectedBy: socket.id });
+    emitEvent(room, makeNoise(room, coal.x, coal.y, CONSTANTS.NOISE.COAL));
   });
 
   // Coal Deposited in Furnace
@@ -210,6 +221,7 @@ io.on('connection', (socket) => {
       fuel: furnace.fuel,
       exitUnlocked: room.mapData.exit.unlocked
     });
+    emitEvent(room, makeNoise(room, furnace.x, furnace.y, CONSTANTS.NOISE.DEPOSIT));
   });
 
   // Breaker Switch Flipped
@@ -225,6 +237,39 @@ io.on('connection', (socket) => {
 
     breaker.active = !breaker.active;
     io.to(room.code).emit('breaker:updated', { breakerId, active: breaker.active, triggeredBy: socket.id });
+    emitEvent(room, makeNoise(room, breaker.x, breaker.y, CONSTANTS.NOISE.BREAKER, now));
+  });
+
+  // Rocks: pick up (carry a few), throw at a point to make noise or stun Cobb
+  on('rock:pickup', ({ rockId }) => {
+    const { room, player } = current(true);
+    if (!room || !isActive(player) || player.rocks >= CONSTANTS.PLAYER.ROCK_MAX) return;
+    const rocks = room.mapData.rocks;
+    const i = rocks.findIndex(r => r.id === rockId);
+    if (i < 0 || !near(player, rocks[i], CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
+    rocks.splice(i, 1);
+    player.rocks += 1;
+    io.to(room.code).emit('rock:taken', { rockId, by: socket.id, rocks: player.rocks });
+  });
+
+  on('rock:throw', ({ x, y }) => {
+    const { room, player } = current(true);
+    const now = Date.now();
+    if (!room || !isActive(player) || player.rocks <= 0 || !isNum(x) || !isNum(y)) return;
+    if (now - (player.thrownAt || 0) < THROW_COOLDOWN) return;
+    player.thrownAt = now;
+    throwRock(room, player, { x, y }, now).forEach(e => emitEvent(room, e));
+  });
+
+  // STARVE: eat a carrot; it grows back after a while
+  on('carrot:eat', ({ carrotId }) => {
+    const { room, player } = current(true);
+    if (!room || !isActive(player) || !room.cfg.starve) return;
+    const carrot = room.mapData.carrots.find(c => c.id === carrotId);
+    if (!carrot || carrot.respawnAt || !near(player, carrot, CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
+    carrot.respawnAt = Date.now() + CONSTANTS.PLAYER.CARROT_RESPAWN;
+    player.hunger = Math.min(CONSTANTS.PLAYER.HUNGER_MAX, player.hunger + CONSTANTS.PLAYER.CARROT_FOOD);
+    io.to(room.code).emit('carrot:updated', { carrotId, available: false, eatenBy: socket.id });
   });
 
   // Player Escape
@@ -276,6 +321,11 @@ io.on('connection', (socket) => {
   });
 });
 
+// Send one [event, data] pair (from game.js) to everyone in the room
+function emitEvent(room, e) {
+  if (e) io.to(room.code).emit(e[0], e[1]);
+}
+
 function checkRoundOver(room) {
   if (room.state !== 'PLAYING') return;
   const results = roundResult(room);
@@ -312,6 +362,7 @@ function serializeRoom(room, withMap = false) {
     level: room.level,
     maxPlayers: room.maxPlayers,
     activeRules: room.activeRules,
+    cfg: room.cfg,
     mapData: withMap ? room.mapData : undefined,
     cobbs: withMap ? snapshot(room).cobbs : undefined,
     players: Array.from(room.players.entries()).map(([id, p]) => ({
@@ -328,7 +379,11 @@ function serializeRoom(room, withMap = false) {
       hasCoal: p.hasCoal,
       isDowned: p.isDowned,
       isDead: p.isDead,
-      isEscaped: p.isEscaped
+      isEscaped: p.isEscaped,
+      lanternDim: p.lanternDim,
+      rocks: p.rocks,
+      warmth: p.warmth,
+      hunger: p.hunger
     }))
   };
 }

@@ -135,11 +135,20 @@ class MapGenerator {
       { id: 'breaker_1', x: 38 * 32 + 16, y: 25 * 32 + 16, active: false, lamps: [3, 6, 4].map(i => lampAt(rooms[i])) }
     ];
 
+    const at = ([x, y]) => ({ x: x * 32 + 16, y: y * 32 + 16 });
+    // Throwable rocks, and carrots that matter only under STARVE
+    const rocks = [[11, 9], [34, 4], [5, 27], [41, 31], [19, 30], [18, 13]]
+      .map((p, i) => ({ id: `rock_s${i}`, ...at(p) }));
+    const carrots = [[4, 9], [41, 9], [11, 31], [26, 7]]
+      .map((p, i) => ({ id: `carrot_${i}`, ...at(p), respawnAt: 0 }));
+
     return {
       width,
       height,
       grid,
       rooms,
+      rocks,
+      carrots,
       furnace: {
         x: furnaceRoom.centerX * 32 + 16,
         y: furnaceRoom.centerY * 32 + 16,

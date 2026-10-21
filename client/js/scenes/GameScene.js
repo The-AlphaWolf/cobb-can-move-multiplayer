@@ -15,6 +15,10 @@ class GameScene extends Phaser.Scene {
     this.status = 'active'; // active, downed, dead, escaped
     this.reviving = false;
     this.spectating = null;
+    this.cfg = this.roomData.cfg; // which rules are on (see shared/rules.js)
+    this.rocks = 0;
+    this.lanternDim = false;
+    this.vitals = { warmth: 100, hunger: 100 };
   }
 
   create() {
@@ -71,7 +75,13 @@ class GameScene extends Phaser.Scene {
       interact: Phaser.Input.Keyboard.KeyCodes.E,
       space: Phaser.Input.Keyboard.KeyCodes.SPACE,
       shift: Phaser.Input.Keyboard.KeyCodes.SHIFT,
-      map: Phaser.Input.Keyboard.KeyCodes.M
+      map: Phaser.Input.Keyboard.KeyCodes.M,
+      lantern: Phaser.Input.Keyboard.KeyCodes.F,
+      throw: Phaser.Input.Keyboard.KeyCodes.R
+    });
+    // Click throws a rock at the pointer
+    this.input.on('pointerdown', (pointer) => {
+      if (this.status === 'active') this.throwRock(pointer.worldX, pointer.worldY);
     });
 
     // 12. Setup Network Listeners, then catch up on anything missed while booting
@@ -83,11 +93,8 @@ class GameScene extends Phaser.Scene {
     // 13. Initialize Real-Time Facility Minimap Radar
     this.initMinimap();
 
-    // 14. Announce Rule Banner
-    this.showRuleBanner(
-      window.CONSTANTS.RULES.COBB_MOVE,
-      'Find coal and feed the furnace. Cobb will not enter its light, but the fire burns down.'
-    );
+    // 14. Announce this level's rules
+    this.announceRules();
 
     // 15. Initial HUD Update
     this.updateHUD();
@@ -125,6 +132,63 @@ class GameScene extends Phaser.Scene {
       const sprite = this.add.image(b.x, b.y, 'breaker_sprite').setPipeline('Light2D');
       this.breakerSprites.set(b.id, sprite);
     });
+
+    this.rockSprites = new Map();
+    this.mapData.rocks.forEach(r => this.addRock(r));
+
+    // Carrots only exist under STARVE
+    this.carrotSprites = new Map();
+    if (this.cfg.starve) {
+      this.mapData.carrots.forEach((c) => {
+        const sprite = this.add.image(c.x, c.y, 'carrot_sprite').setPipeline('Light2D').setDepth(2);
+        sprite.setVisible(!c.respawnAt);
+        this.carrotSprites.set(c.id, sprite);
+      });
+    }
+  }
+
+  addRock(r) {
+    const sprite = this.add.image(r.x, r.y, 'rock_sprite').setPipeline('Light2D').setDepth(2);
+    this.rockSprites.set(r.id, sprite);
+    return sprite;
+  }
+
+  removeRock(id) {
+    const sprite = this.rockSprites.get(id);
+    if (sprite) sprite.destroy();
+    this.rockSprites.delete(id);
+  }
+
+  // Ask the server to throw a rock at a point; it decides where it lands and what it hits
+  throwRock(x, y) {
+    if (this.rocks <= 0) return;
+    this.socket.emit('rock:throw', { x: Math.round(x), y: Math.round(y) });
+  }
+
+  announceRules() {
+    const { RULES } = window.RULESET;
+    const rules = this.roomData.activeRules;
+    // Every rule beyond the level-1 basics gets announced; stacked rules share the banner
+    const news = rules.length > 1 ? rules.filter(r => r !== 'MOVE') : rules;
+    const titles = news.filter(r => !RULES[r].debuff).map(r => RULES[r].title);
+    this.showRuleBanner(titles.join(' + ') || RULES[news[0]].title, news.map(r => RULES[r].desc).join(' '));
+
+    const strip = document.getElementById('hud-rules');
+    strip.innerHTML = '';
+    const level = document.createElement('span');
+    level.className = 'hud-rule';
+    level.textContent = `LEVEL ${this.roomData.level}`;
+    strip.appendChild(level);
+    rules.forEach((r) => {
+      const tag = document.createElement('span');
+      tag.className = `hud-rule ${RULES[r].debuff ? 'debuff' : ''}`;
+      tag.textContent = RULES[r].title;
+      tag.title = RULES[r].desc;
+      strip.appendChild(tag);
+    });
+
+    document.getElementById('hud-freeze-container').classList.toggle('hidden', !this.cfg.freeze);
+    document.getElementById('hud-starve-container').classList.toggle('hidden', !this.cfg.starve);
   }
 
   createPlayer() {
@@ -200,7 +264,8 @@ class GameScene extends Phaser.Scene {
     const t = this.time.now;
     const lanternOn = this.status === 'active' || this.status === 'downed';
     this.lanternLight.setPosition(this.player.x, this.player.y);
-    this.lanternLight.setRadius(this.status === 'downed' ? 60 : window.CONSTANTS.LIGHTS.LANTERN_RADIUS);
+    const L = window.CONSTANTS.LIGHTS;
+    this.lanternLight.setRadius(this.status === 'downed' ? 60 : (this.lanternDim ? L.LANTERN_STEALTH : L.LANTERN_RADIUS));
     this.lanternLight.setIntensity(lanternOn ? 1.9 + Math.sin(t / 150) * 0.12 : 0);
     const fuel = this.mapData.furnace.fuel;
     this.furnaceLight.setRadius(window.CONSTANTS.furnaceRadius(fuel) * (1 + Math.sin(t / 200) * 0.03));
@@ -213,6 +278,14 @@ class GameScene extends Phaser.Scene {
     const active = this.status === 'active';
     this.handleMapToggle();
     if (active) {
+      if (Phaser.Input.Keyboard.JustDown(this.wasd.lantern)) {
+        this.lanternDim = !this.lanternDim;
+        this.updateHUD();
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.wasd.throw)) {
+        const dir = this.player.flipX ? -1 : 1;
+        this.throwRock(this.player.x + dir * 200, this.player.y);
+      }
       this.updateReviving();
       this.handlePlayerMovement(delta);
       this.handleInteractions();
@@ -232,7 +305,8 @@ class GameScene extends Phaser.Scene {
         x: Math.round(this.player.x),
         y: Math.round(this.player.y),
         flipX: this.player.flipX,
-        isSprinting: this.player.isSprinting
+        isSprinting: this.player.isSprinting,
+        lanternDim: this.lanternDim
       });
     }
   }
@@ -280,7 +354,8 @@ class GameScene extends Phaser.Scene {
       remote.label.setPosition(remote.x, remote.y - 14);
       remote.light.setPosition(remote.x, remote.y);
       // Downed lanterns gutter; the dead carry none
-      remote.light.setRadius(remote.state === 'downed' ? 60 : window.CONSTANTS.LIGHTS.LANTERN_RADIUS);
+      const L = window.CONSTANTS.LIGHTS;
+      remote.light.setRadius(remote.state === 'downed' ? 60 : (remote.lanternDim ? L.LANTERN_STEALTH : L.LANTERN_RADIUS));
       remote.light.setIntensity(remote.state === 'dead' ? 0 : 1.7);
 
       let text = remote.name;
@@ -454,7 +529,25 @@ class GameScene extends Phaser.Scene {
       }
     }
 
-    // 3. Breakers switch a wing's lamps on or off
+    // 3. Eat a carrot (STARVE)
+    for (const [id, sprite] of this.carrotSprites) {
+      if (sprite.visible && Phaser.Math.Distance.Between(px, py, sprite.x, sprite.y) <= radius) {
+        this.socket.emit('carrot:eat', { carrotId: id });
+        return;
+      }
+    }
+
+    // 4. Pick up a rock
+    if (this.rocks < window.CONSTANTS.PLAYER.ROCK_MAX) {
+      for (const [id, sprite] of this.rockSprites) {
+        if (Phaser.Math.Distance.Between(px, py, sprite.x, sprite.y) <= radius) {
+          this.socket.emit('rock:pickup', { rockId: id });
+          return;
+        }
+      }
+    }
+
+    // 5. Breakers switch a wing's lamps on or off
     for (const b of this.mapData.breakers) {
       if (Phaser.Math.Distance.Between(px, py, b.x, b.y) <= radius) {
         this.socket.emit('breaker:toggle', { breakerId: b.id });
@@ -462,7 +555,7 @@ class GameScene extends Phaser.Scene {
       }
     }
 
-    // 4. Exit Escape
+    // 6. Exit Escape
     if (this.mapData.exit.unlocked) {
       const eDist = Phaser.Math.Distance.Between(px, py, this.exitDoorSprite.x, this.exitDoorSprite.y);
       if (eDist <= radius + 15) {
@@ -524,6 +617,18 @@ class GameScene extends Phaser.Scene {
       heldElem.style.color = this.player.hasCoal ? 'var(--accent-amber)' : 'var(--text-main)';
     }
     this.updateFireHUD();
+    document.getElementById('hud-rocks').textContent = `ROCKS: ${this.rocks}`;
+    document.getElementById('hud-lantern').textContent = this.lanternDim ? 'SHUTTERED' : 'FULL';
+  }
+
+  updateVitalsHUD() {
+    const show = (id, value) => {
+      const el = document.getElementById(id);
+      el.textContent = `${Math.round(value)}%`;
+      el.className = value < 25 ? 'locked' : '';
+    };
+    show('hud-warmth', this.vitals.warmth);
+    show('hud-hunger', this.vitals.hunger);
   }
 
   // Fuel left in the furnace; under a quarter, the safe zone is about to shrink to nothing
@@ -545,6 +650,7 @@ class GameScene extends Phaser.Scene {
         remote.targetX = data.x;
         remote.targetY = data.y;
         remote.setFlipX(data.flipX);
+        remote.lanternDim = data.lanternDim;
       },
 
       // Server rejected a move (too fast or out of bounds)
@@ -570,14 +676,58 @@ class GameScene extends Phaser.Scene {
 
       'breaker:updated': (data) => this.setBreaker(data.breakerId, data.active),
 
+      'rock:taken': (data) => {
+        this.removeRock(data.rockId);
+        if (data.by === this.myId) {
+          this.rocks = data.rocks;
+          this.updateHUD();
+        }
+      },
+
+      // The rock arcs from the thrower to where it landed, then lies there to be picked up again
+      'rock:thrown': (data) => {
+        if (data.by === this.myId) {
+          this.rocks -= 1;
+          this.updateHUD();
+        }
+        const sprite = this.addRock({ id: data.rock.id, x: data.from.x, y: data.from.y });
+        this.tweens.add({ targets: sprite, x: data.rock.x, y: data.rock.y, duration: 220, ease: 'Quad.easeOut' });
+        if (data.hitCobb) this.cameras.main.flash(120, 200, 220, 255);
+      },
+
+      'carrot:updated': (data) => {
+        const sprite = this.carrotSprites.get(data.carrotId);
+        if (sprite) sprite.setVisible(data.available);
+      },
+
+      // COBB CAN HEAR: show each sound as a ripple so players learn what carries
+      'noise': (data) => {
+        const ring = this.add.circle(data.x, data.y, 6).setStrokeStyle(1, 0xffffff, 0.5).setDepth(4);
+        this.tweens.add({
+          targets: ring,
+          radius: data.radius,
+          alpha: 0,
+          duration: 700,
+          onComplete: () => ring.destroy()
+        });
+      },
+
       'world:tick': (data) => {
         this.mapData.furnace.fuel = data.fuel;
         this.updateFireHUD();
+        const mine = data.vitals && data.vitals.find(v => v.id === this.myId);
+        if (mine) {
+          this.vitals = mine;
+          this.updateVitalsHUD();
+        }
         data.cobbs.forEach((c) => {
           const sprite = this.cobbs.get(c.id) || this.addCobb(c);
           sprite.targetX = c.x;
           sprite.targetY = c.y;
           sprite.setFlipX(c.flipX);
+          // Frozen by a watching light: cold blue. Stunned by a rock: flickers.
+          sprite.setTint(c.frozen ? 0x8899ff : 0xffffff);
+          sprite.setAlpha(c.stunned ? 0.5 + Math.sin(this.time.now / 60) * 0.3 : 1);
           // Jolt the camera the moment Cobb locks on to us
           const chasingMe = c.state === 'CHASE' && c.targetId === this.myId;
           if (chasingMe && !sprite.chasingMe) this.cameras.main.shake(150, 0.01);
@@ -663,6 +813,19 @@ class GameScene extends Phaser.Scene {
     this.mapData.furnace.fuel = room.mapData.furnace.fuel;
     this.setExitUnlocked(room.mapData.exit.unlocked);
     room.mapData.breakers.forEach(b => this.setBreaker(b.id, b.active));
+    // Rocks may have been picked up or thrown while we loaded
+    Array.from(this.rockSprites.keys()).forEach(id => this.removeRock(id));
+    room.mapData.rocks.forEach(r => this.addRock(r));
+    room.mapData.carrots.forEach((c) => {
+      const sprite = this.carrotSprites.get(c.id);
+      if (sprite) sprite.setVisible(!c.respawnAt);
+    });
+    const me = room.players.find(p => p.id === this.myId);
+    if (me) {
+      this.rocks = me.rocks;
+      this.vitals = { warmth: me.warmth, hunger: me.hunger };
+      this.updateVitalsHUD();
+    }
 
     room.players.forEach((p) => {
       const state = p.isEscaped ? 'escaped' : p.isDead ? 'dead' : p.isDowned ? 'downed' : 'active';

@@ -48,14 +48,14 @@
         </div>
 
         <div class="controls-hint">
-          <span>[W,A,S,D] MOVE</span> • <span>[SHIFT] SPRINT</span> • <span>[E / SPACE] INTERACT &amp; REVIVE</span> • <span>[M] FACILITY MAP</span>
+          <span>[W,A,S,D] MOVE</span> • <span>[SHIFT] SPRINT</span> • <span>[E / SPACE] INTERACT &amp; REVIVE</span> • <span>[F] LANTERN</span> • <span>[CLICK / R] THROW ROCK</span> • <span>[M] FACILITY MAP</span>
         </div>
       </div>
 
       <!-- Lobby View: Connected Players, Ready, Chat -->
       <div id="view-lobby" class="menu-view">
         <div class="lobby-header">
-          <div class="room-code-tag">ROOM CODE: <span id="display-room-code">----</span></div>
+          <div class="room-code-tag">ROOM CODE: <span id="display-room-code">----</span> · LEVEL <span id="display-level">1</span></div>
           <button id="btn-copy-code" class="btn-sm">COPY CODE</button>
         </div>
 
@@ -139,6 +139,9 @@
       </div>
     </div>
     
+    <!-- Active rules for this level -->
+    <div id="hud-rules" class="hud-rules"></div>
+
     <!-- Top-Right Minimap Radar -->
     <div class="hud-minimap-box" id="minimap-box">
       <div class="minimap-header">
@@ -162,6 +165,14 @@
           <div id="stamina-fill" class="stamina-fill" style="width: 100%;"></div>
         </div>
       </div>
+      <div class="item-slot">
+        <span class="slot-label">[F] LANTERN</span>
+        <span id="hud-lantern">FULL</span>
+      </div>
+      <div class="item-slot">
+        <span class="slot-label">[CLICK / R] THROW</span>
+        <span id="hud-rocks">ROCKS: 0</span>
+      </div>
       <div id="hud-item-slot" class="item-slot">
         <span class="slot-label">[E] HELD</span>
         <span id="held-item-name">HANDS EMPTY</span>
@@ -171,6 +182,7 @@
 
   <!-- Game Scripts -->
   <script src="shared/constants.js"></script>
+  <script src="shared/rules.js"></script>
   <script src="js/scenes/BootScene.js"></script>
   <script src="js/scenes/GameScene.js"></script>
   <script src="js/main.js"></script>

@@ -1,5 +1,6 @@
 const MapGenerator = require('../shared/MapGenerator');
 const CONSTANTS = require('../shared/constants');
+const { rollRules, ruleConfig } = require('../shared/rules');
 const { buildWalkGrid, createCobbs } = require('./cobb');
 
 // Modes players can pick; add 'versus' and 'race' here once they are built
@@ -32,8 +33,10 @@ class RoomManager {
       hostId: hostSocketId,
       state: 'LOBBY', // LOBBY, PLAYING
       mode: MODES.includes(options.mode) ? options.mode : 'coop',
-      level: 1,
-      activeRules: [CONSTANTS.RULES.COBB_MOVE],
+      // COBB_START_LEVEL lets you playtest later levels without clearing the earlier ones
+      level: Math.max(1, parseInt(process.env.COBB_START_LEVEL, 10) || 1),
+      activeRules: [],
+      rulesLevel: 0, // a failed level is retried with the same rules
       mapData,
       // One player per spawn point until maps scale with player count
       maxPlayers: mapData.playerSpawns.length,
@@ -93,6 +96,12 @@ class RoomManager {
     p.reviveProgress = 0;  // ms a teammate has spent reviving them
     p.reviving = false;    // holding E over a downed teammate
     p.safeUntil = 0;       // Cobb can't grab before this time
+    p.warmth = CONSTANTS.PLAYER.WARMTH_MAX;
+    p.hunger = CONSTANTS.PLAYER.HUNGER_MAX;
+    p.rocks = 0;
+    p.trail = [];          // scent breadcrumbs
+    p.trailAt = 0;
+    p.lanternDim = false;  // shuttered lantern
   }
 
   // Fresh map, Cobb and player state for a new round
@@ -102,7 +111,15 @@ class RoomManager {
     room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
     room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
     room.walk = buildWalkGrid(room.mapData, room.safeRadius);
-    room.cobbs = createCobbs(room.mapData, now);
+    if (room.rulesLevel !== room.level) {
+      room.activeRules = rollRules(room.level);
+      room.rulesLevel = room.level;
+    }
+    room.cfg = ruleConfig(room.activeRules, room.level);
+    room.cobbs = createCobbs(room.mapData, now, room.cfg.cobbCount);
+    room.noises = [];
+    room.nextRockId = 0;
+    room.lastDownCause = null;
     room.state = 'PLAYING';
     room.stats.startTime = now;
 

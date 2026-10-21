@@ -1,9 +1,10 @@
-// Server-side Cobb: grid pathfinding plus a small state machine.
+// Server-side Cobb: grid pathfinding, senses and a small state machine.
 // Pure logic (no sockets, no Node APIs) so it can be tested and later run in a browser.
 const CONSTANTS = require('../shared/constants');
 
 const TS = CONSTANTS.TILE_SIZE;
 const FLOOR = CONSTANTS.TILE_TYPES.FLOOR;
+const C = CONSTANTS.COBB;
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
 const toTile = (v) => Math.floor(v / TS);
@@ -30,7 +31,7 @@ const inSafeZone = (room, p) => dist(p, room.mapData.furnace) < (room.safeRadius
 // Breadth-first search over 8 directions; diagonals only where both side tiles are open,
 // so Cobb never cuts a wall corner. Lit tiles can be crossed only on the way out of the
 // safe zone, never into it. Returns tile centres from the step after `from` to `to`.
-// ponytail: plain BFS per repath, fine for a 46x36 grid; switch to A* if maps grow a lot.
+// ponytail: plain BFS per repath, fine for maps this size; switch to A* if maps grow a lot.
 function findPath(walk, from, to) {
   const h = walk.length;
   const w = walk[0].length;
@@ -82,24 +83,81 @@ function findPath(walk, from, to) {
   return path.reverse();
 }
 
-function createCobbs(mapData, now) {
-  return [{
-    id: 'cobb_0',
-    x: mapData.cobbSpawn.x,
-    y: mapData.cobbSpawn.y,
+// True when nothing but floor lies between two points
+function lineOfSight(grid, a, b) {
+  const steps = Math.ceil(dist(a, b) / 8);
+  for (let i = 1; i < steps; i++) {
+    const x = a.x + ((b.x - a.x) * i) / steps;
+    const y = a.y + ((b.y - a.y) * i) / steps;
+    if (grid[toTile(y)][toTile(x)] !== FLOOR) return false;
+  }
+  return true;
+}
+
+// The first Cobb starts at the map's Cobb spawn; duplicates take the rooms farthest from the fire
+function createCobbs(mapData, now, count = 1) {
+  const f = mapData.furnace;
+  const far = mapData.rooms
+    .filter(r => r.id !== 0)
+    .map(r => ({ x: tileCenter(r.centerX), y: tileCenter(r.centerY) }))
+    .filter(p => dist(p, mapData.cobbSpawn) > TS)
+    .sort((a, b) => dist(b, f) - dist(a, f));
+  const spots = [mapData.cobbSpawn, ...far];
+  return Array.from({ length: count }, (_, i) => ({
+    id: `cobb_${i}`,
+    x: spots[i % spots.length].x,
+    y: spots[i % spots.length].y,
     flipX: false,
-    state: 'WANDER',
+    state: 'WANDER', // WANDER, INVESTIGATE, CHASE, SEARCH
     targetId: null,
     goal: null,
     path: [],
     repathAt: 0,
     lastSeen: null,
+    chaseStart: 0,
+    heardAt: now,
+    smelledAt: now,
+    sniffAt: now,
+    frozen: false,
+    stunnedUntil: 0,
     lookUntil: 0,
-    pauseUntil: now + CONSTANTS.COBB.START_DELAY
-  }];
+    pauseUntil: now + C.START_DELAY
+  }));
 }
 
 const isActive = (p) => p.role === 'SURVIVOR' && !p.isEscaped && !p.isDowned && !p.isDead;
+
+// Players Cobb can go after: standing, and not sheltering in the furnace's light
+const isPrey = (room, p) => isActive(p) && !inSafeZone(room, p);
+
+// Lights that are part of the room: the fire, and lamps whose breaker is on
+function inRoomLight(room, p, shrink = 1) {
+  const f = room.mapData.furnace;
+  if (dist(p, f) < CONSTANTS.furnaceRadius(f.fuel) * shrink) return true;
+  return room.mapData.breakers.some(b => b.active &&
+    b.lamps.some(l => dist(p, l) < CONSTANTS.LIGHTS.BRAZIER_RADIUS * shrink));
+}
+
+// COBB CAN SEE: a full lantern shows down any open line, a shuttered one only up close.
+// Standing in a lit room gives you away either way.
+function canSee(cobb, room, p) {
+  const range = !p.lanternDim || inRoomLight(room, p, 0.8) ? C.VISION_RANGE : C.SHUTTERED_VISION;
+  return dist(cobb, p) <= range && lineOfSight(room.mapData.grid, cobb, p);
+}
+
+// COBB CAN'T MOVE: frozen while a standing player's lantern faces it. Only people count:
+// a lamp would pin Cobb in its room for the whole level.
+function isWatched(cobb, room) {
+  for (const p of room.players.values()) {
+    if (!isActive(p)) continue;
+    const radius = p.lanternDim ? CONSTANTS.LIGHTS.LANTERN_STEALTH : CONSTANTS.LIGHTS.LANTERN_RADIUS;
+    const facing = p.flipX ? -1 : 1;
+    if (dist(cobb, p) <= radius * 0.9 && (cobb.x - p.x) * facing >= -8 && lineOfSight(room.mapData.grid, p, cobb)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 // Returns false (and drops the goal) when there is no way there, so Cobb never walks
 // straight through walls or into the safe zone
@@ -113,22 +171,64 @@ function setGoal(cobb, walk, goal) {
 function pickWanderRoom(cobb, room) {
   const here = room.mapData.rooms.find(r =>
     toTile(cobb.x) >= r.x && toTile(cobb.x) < r.x + r.w && toTile(cobb.y) >= r.y && toTile(cobb.y) < r.y + r.h);
-  // Stay out of the furnace hub (room 0) while wandering, like the original level 1
+  // Stay out of the furnace hub (room 0) while wandering
   const choices = room.mapData.rooms.filter(r => r.id !== 0 && r !== here);
   const r = choices[Math.floor(Math.random() * choices.length)];
   setGoal(cobb, room.walk, { x: tileCenter(r.centerX), y: tileCenter(r.centerY) });
 }
 
-// Players Cobb can go after: standing, and not sheltering in the furnace's light
-const isPrey = (room, p) => isActive(p) && !inSafeZone(room, p);
+function startChase(cobb, p, now) {
+  cobb.state = 'CHASE';
+  cobb.targetId = p.id;
+  cobb.repathAt = 0;
+  cobb.chaseStart = now;
+  cobb.lookUntil = 0;
+}
 
-function nearestPrey(cobb, room, radius) {
+function investigate(cobb, room, spot) {
+  if (setGoal(cobb, room.walk, spot)) {
+    cobb.state = 'INVESTIGATE';
+    cobb.lookUntil = 0;
+  }
+}
+
+// Senses, strongest first: someone right there, someone seen, a noise, a scent
+function perceive(cobb, room, now) {
+  const cfg = room.cfg;
   let best = null;
   room.players.forEach((p) => {
+    if (!isPrey(room, p)) return;
     const d = dist(cobb, p);
-    if (isPrey(room, p) && d <= radius && (!best || d < best.d)) best = { p, d };
+    if ((d <= C.AGGRO_RADIUS || (cfg.see && canSee(cobb, room, p))) && (!best || d < best.d)) best = { p, d };
   });
-  return best && best.p;
+  if (best) {
+    startChase(cobb, best.p, now);
+    return;
+  }
+
+  if (cfg.hear) {
+    const heard = room.noises.filter(n => n.t > cobb.heardAt && dist(cobb, n) <= n.radius).pop();
+    if (heard) {
+      cobb.heardAt = heard.t;
+      investigate(cobb, room, heard);
+      return;
+    }
+  }
+
+  if (cfg.smell && now >= cobb.sniffAt) {
+    cobb.sniffAt = now + C.SNIFF_INTERVAL;
+    let freshest = null;
+    room.players.forEach((p) => {
+      if (!isPrey(room, p)) return;
+      p.trail.forEach((c) => {
+        if (c.t > cobb.smelledAt && dist(cobb, c) <= C.SMELL_RANGE && (!freshest || c.t > freshest.t)) freshest = c;
+      });
+    });
+    if (freshest) {
+      cobb.smelledAt = freshest.t;
+      investigate(cobb, room, freshest);
+    }
+  }
 }
 
 // Follow the path, then walk straight at the goal point inside its final tile
@@ -158,26 +258,22 @@ function moveAlong(cobb, speed, dt) {
 }
 
 // Advance one Cobb by dt seconds. Returns the player it grabbed this step, if any.
-// pauseUntil makes Cobb fully inert (round start, after a grab);
+// pauseUntil makes Cobb fully inert (round start, after a grab, stunned by a rock);
 // lookUntil only stops it walking while it searches.
 function stepCobb(cobb, room, dt, now) {
   if (now < cobb.pauseUntil) return null;
-  const C = CONSTANTS.COBB;
+  const cfg = room.cfg;
   const players = room.players;
 
-  if (cobb.state !== 'CHASE') {
-    const seen = nearestPrey(cobb, room, C.AGGRO_RADIUS);
-    if (seen) {
-      cobb.state = 'CHASE';
-      cobb.targetId = seen.id;
-      cobb.repathAt = 0;
-    }
-  }
+  if (cobb.state !== 'CHASE') perceive(cobb, room, now);
 
   let speed = C.WANDER_SPEED;
+  if (cobb.state === 'INVESTIGATE') speed = C.INVESTIGATE_SPEED;
   if (cobb.state === 'CHASE') {
     const target = players.get(cobb.targetId);
-    if (!target || !isActive(target) || dist(cobb, target) > C.LOSE_RADIUS) {
+    const d = target ? dist(cobb, target) : Infinity;
+    const stillSeen = target && cfg.see && canSee(cobb, room, target);
+    if (!target || !isActive(target) || (d > C.LOSE_RADIUS && !stillSeen)) {
       // Lost them: walk to where they were last seen and look around
       cobb.state = 'SEARCH';
       cobb.targetId = null;
@@ -190,6 +286,7 @@ function stepCobb(cobb, room, dt, now) {
       cobb.path = [];
     } else {
       speed = C.CHASE_SPEED;
+      if (cfg.accel) speed *= 1 + Math.min(C.CHASE_ACCEL_MAX, ((now - cobb.chaseStart) / 1000) * C.CHASE_ACCEL);
       cobb.lastSeen = { x: target.x, y: target.y };
       if (now >= cobb.repathAt) {
         cobb.repathAt = now + C.REPATH_INTERVAL;
@@ -199,14 +296,18 @@ function stepCobb(cobb, room, dt, now) {
       }
     }
   }
+  speed *= cfg.speedMul;
 
-  // Looking around stops Cobb's feet, not its senses or its hands
+  cobb.frozen = cfg.cantMove && isWatched(cobb, room);
+  if (cfg.cantMove && !cobb.frozen) speed *= C.UNWATCHED_MUL;
+
+  // Looking around (or being watched) stops Cobb's feet, not its senses
   if (cobb.state === 'CHASE') cobb.lookUntil = 0;
-  if (now >= (cobb.lookUntil || 0)) {
+  if (!cobb.frozen && now >= cobb.lookUntil) {
     if (cobb.state === 'WANDER' && !cobb.goal) pickWanderRoom(cobb, room);
 
     const arrived = moveAlong(cobb, speed, dt);
-    if (arrived && cobb.state === 'SEARCH') {
+    if (arrived && (cobb.state === 'SEARCH' || cobb.state === 'INVESTIGATE')) {
       cobb.state = 'WANDER';
       cobb.goal = null;
       cobb.lookUntil = now + C.SEARCH_PAUSE;
@@ -215,8 +316,10 @@ function stepCobb(cobb, room, dt, now) {
     }
   }
 
+  // A frozen Cobb can't lift its arms either
+  if (cobb.frozen) return null;
   for (const p of players.values()) {
-    if (isPrey(room, p) && now >= (p.safeUntil || 0) && dist(cobb, p) <= C.NORMAL_REACH) {
+    if (isPrey(room, p) && now >= (p.safeUntil || 0) && dist(cobb, p) <= cfg.reach) {
       // Grabbed: Cobb lingers, then loses interest and wanders off
       cobb.state = 'WANDER';
       cobb.targetId = null;
@@ -228,4 +331,40 @@ function stepCobb(cobb, room, dt, now) {
   return null;
 }
 
-module.exports = { buildWalkGrid, findPath, createCobbs, stepCobb, isActive, LIT };
+// Duplicates push apart instead of stacking into one sprite
+function separate(cobbs, walk) {
+  for (let i = 0; i < cobbs.length; i++) {
+    for (let j = i + 1; j < cobbs.length; j++) {
+      const a = cobbs[i];
+      const b = cobbs[j];
+      const d = dist(a, b);
+      if (d >= C.SEPARATION) continue;
+      const nx = d > 0.01 ? (a.x - b.x) / d : 1;
+      const ny = d > 0.01 ? (a.y - b.y) / d : 0;
+      const push = (C.SEPARATION - d) / 2;
+      [[a, 1], [b, -1]].forEach(([c, s]) => {
+        const x = c.x + nx * push * s;
+        const y = c.y + ny * push * s;
+        if (walk[toTile(y)][toTile(x)] === OPEN) {
+          c.x = x;
+          c.y = y;
+        }
+      });
+    }
+  }
+}
+
+// Stun from a rock: stops Cobb in its tracks and makes it forget who it was after
+function stun(cobb, now) {
+  cobb.pauseUntil = now + C.ROCK_STUN;
+  cobb.stunnedUntil = now + C.ROCK_STUN;
+  cobb.state = 'WANDER';
+  cobb.targetId = null;
+  cobb.goal = null;
+  cobb.path = [];
+}
+
+module.exports = {
+  buildWalkGrid, findPath, lineOfSight, createCobbs, stepCobb, separate, stun,
+  isActive, inRoomLight, LIT, OPEN, toTile
+};

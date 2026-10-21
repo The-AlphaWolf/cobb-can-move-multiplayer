@@ -205,6 +205,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentRoom = room;
     playerCountElem.textContent = room.players.length;
     maxPlayersElem.textContent = room.maxPlayers;
+    document.getElementById('display-level').textContent = room.level;
     lobbyPlayerList.innerHTML = '';
 
     const isHost = room.hostId === socket.id;
@@ -232,12 +233,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function showResults({ won, level, tip, durationMs, players }) {
-    resultsTitle.textContent = won ? `LEVEL ${level} CLEARED` : `CAUGHT ON LEVEL ${level}`;
+  function showResults({ won, level, storyComplete, tip, durationMs, players }) {
+    resultsTitle.textContent = storyComplete
+      ? 'YOU ESCAPED THE FACILITY'
+      : (won ? `LEVEL ${level} CLEARED` : `CAUGHT ON LEVEL ${level}`);
     resultsTitle.className = `results-title ${won ? 'won' : 'lost'}`;
     const secs = Math.round(durationMs / 1000);
     resultsTime.textContent = `ROUND TIME ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-    resultsTip.textContent = tip ? `TIP: ${tip}` : '';
+    resultsTip.textContent = tip
+      ? `TIP: ${tip}`
+      : (storyComplete ? 'All seven levels cleared. Keep going: endless mode stacks two rules every level.' : '');
     btnResultsContinue.textContent = won ? 'BACK TO LOBBY' : 'BACK TO LOBBY TO RETRY';
 
     resultsList.innerHTML = '';

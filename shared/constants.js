@@ -1,21 +1,14 @@
-// Shared constants for COBB CAN MOVE
+// Shared constants for COBB CAN MOVE (loaded by the server and the browser)
 const CONSTANTS = {
   TILE_SIZE: 32,
   MAP: {
     DEFAULT_WIDTH: 46,
-    DEFAULT_HEIGHT: 36,
-    MIN_ROOM_SIZE: 6,
-    MAX_ROOM_SIZE: 16,
-    MAX_ROOMS: 12,
-    CORRIDOR_WIDTH: 3
+    DEFAULT_HEIGHT: 36
   },
   TILE_TYPES: {
     EMPTY: 0,
     FLOOR: 1,
-    WALL: 2,
-    DOOR: 3,
-    FURNACE: 4,
-    EXIT: 5
+    WALL: 2
   },
   PLAYER: {
     BASE_SPEED: 145,
@@ -24,35 +17,60 @@ const CONSTANTS = {
     STAMINA_DRAIN: 18,
     STAMINA_RECOVER: 35,
     INTERACTION_RADIUS: 55,
-    WARMTH_MAX: 100,
-    WARMTH_DRAIN: 4,
-    HUNGER_MAX: 100,
-    HUNGER_DRAIN: 3,
     REVIVE_RADIUS: 48,     // how close a teammate must stand to revive
     REVIVE_TIME: 2000,     // ms of holding E to pick someone up
     BLEEDOUT_TIME: 10000,  // ms a downed player waits before dying
-    REVIVE_GRACE: 2000     // ms Cobb can't grab someone just revived
+    REVIVE_GRACE: 2000,    // ms Cobb can't grab someone just revived
+    REVIVE_REFILL: 40,     // warmth / food a revived player comes back with
+    WARMTH_MAX: 100,
+    WARMTH_DRAIN: 3,       // per second away from heat (FREEZE)
+    WARMTH_REGEN: 20,      // per second near the fire or a lit lamp
+    HUNGER_MAX: 100,
+    HUNGER_DRAIN: 1.5,     // per second (STARVE)
+    CARROT_FOOD: 60,
+    CARROT_RESPAWN: 25000,
+    ROCK_MAX: 3,           // rocks you can carry
+    ROCK_RANGE: 260
   },
   COBB: {
     WANDER_SPEED: 65,
     CHASE_SPEED: 105,
-    AGGRO_RADIUS: 85,
+    INVESTIGATE_SPEED: 85, // walking to a noise or a scent
+    AGGRO_RADIUS: 85,      // notices anyone this close, whatever the rules
     LOSE_RADIUS: 220,      // gives up the chase beyond this distance
     SEARCH_PAUSE: 2500,    // looks around this long where it lost you
     START_DELAY: 3000,     // head start at the beginning of a round
     REPATH_INTERVAL: 300,
-    CHASE_DURATION: 3500,
-    HIT_STUN: 2500,
-    FAST_SPEED: 155,
+    HIT_STUN: 2500,        // lingers after a grab
+    ROCK_STUN: 2500,
     NORMAL_REACH: 30,
-    LONG_REACH: 85,
-    HEARING_RANGE: 280,
-    VISION_RANGE: 220,
-    SNIFF_INTERVAL: 4000
+    LONG_REACH: 55,        // COBB CAN REACH
+    FASTER_MUL: 1.45,      // COBB CAN BE FASTER
+    CHASE_ACCEL: 0.06,     // FASTER: extra speed per second of chase...
+    CHASE_ACCEL_MAX: 0.3,  // ...up to this much
+    UNWATCHED_MUL: 1.6,    // COBB CAN'T MOVE: how fast it closes in when nobody lights it
+    VISION_RANGE: 240,     // COBB CAN SEE, against a full lantern
+    SHUTTERED_VISION: 90,  // against a shuttered lantern in the dark
+    SMELL_RANGE: 220,
+    SNIFF_INTERVAL: 4000,
+    SEPARATION: 28         // duplicates keep at least this far apart
+  },
+  NOISE: {                 // radius each sound carries (COBB CAN HEAR)
+    LIFE: 1500,
+    SPRINT: 200,
+    COAL: 120,
+    DEPOSIT: 260,
+    BREAKER: 300,
+    ROCK: 320
+  },
+  TRAIL: {                 // scent breadcrumbs (COBB CAN SMELL)
+    INTERVAL: 400,
+    LIFE: 30000,
+    MAX: 80
   },
   LIGHTS: {
     LANTERN_RADIUS: 140,
-    LANTERN_STEALTH: 75,
+    LANTERN_STEALTH: 75,   // shuttered lantern
     FURNACE_RADIUS: 240,   // at full fuel
     EMBER_RADIUS: 70,      // a cold furnace still glows a little
     BRAZIER_RADIUS: 130,   // room lamps powered by breakers
@@ -65,34 +83,6 @@ const CONSTANTS = {
     FUEL_PER_COAL: 40000,
     MAX_FUEL: 90000,
     SAFE_SHARE: 0.75       // fraction of the light radius Cobb keeps out of
-  },
-  // Shown on the results screen after a failed level
-  RULE_TIPS: {
-    'COBB CAN MOVE': 'Cobb only notices you up close. Keep your distance, and walk away the moment it turns toward you.'
-  },
-  RULES: {
-    // Canon
-    COBB_MOVE: 'COBB CAN MOVE',
-    COBB_SEE: 'COBB CAN SEE',
-    COBB_HEAR: 'COBB CAN HEAR',
-    COBB_SMELL: 'COBB CAN SMELL',
-    COBB_REACH: 'COBB CAN REACH',
-    COBB_DUPLICATE: 'COBB CAN DUPLICATE',
-    COBB_FASTER: 'COBB CAN BE FASTER',
-    COBB_CANT_MOVE: "COBB CAN'T MOVE",
-    FREEZE: 'FREEZE',
-    STARVE: 'STARVE',
-    // Custom Multiplayer additions
-    COBB_MIMIC: 'COBB CAN MIMIC',
-    COBB_SHADOW_STEP: 'COBB CAN SHADOW STEP',
-    COBB_EXTINGUISH: 'COBB CAN EXTINGUISH',
-    COBB_HEAR_MIC: 'COBB CAN HEAR YOUR MIC',
-    HOT_COAL: 'HOT COAL',
-    TETHERED: 'TETHERED',
-    MAZE_SHIFT: 'THE MAZE CAN SHIFT',
-    LIGHT_BURNS: 'LIGHT CAN BURN',
-    SHARED_HEARTBEAT: 'SHARED HEARTBEAT',
-    BLIND_TRUST: 'BLIND TRUST'
   }
 };
 

@@ -675,3 +675,36 @@ select:disabled {
 .results-tip:empty {
   display: none;
 }
+
+/* Active rules strip under the top bar */
+.hud-rules {
+  position: absolute;
+  top: 62px;
+  left: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 60vw;
+}
+
+.hud-rule {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent-red);
+  color: var(--accent-red);
+  background: rgba(10, 11, 16, 0.85);
+}
+
+.hud-rule.debuff {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+.hud-bottom-bar {
+  gap: 10px;
+}
+
+.hud-bottom-bar .stamina-wrapper {
+  margin-right: auto;
+}
