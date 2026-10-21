@@ -47,6 +47,8 @@ Set `COBB_START_LEVEL=7` to start new rooms at a later level for playtesting.
 
 Any Node 18+ host that supports WebSockets works (Render, Railway, Fly.io). Use `npm install` to build and `npm start` to run. The server listens on `PORT`, and `/health` returns its status.
 
+On Render, [render.yaml](render.yaml) sets everything up: New → Blueprint → pick this repository. Rooms live in memory, so run a single instance.
+
 ## Layout
 
 - `server/`: Socket.IO server, rooms, Cobb's AI (`cobb.js`) and the per-tick round rules (`game.js`)
