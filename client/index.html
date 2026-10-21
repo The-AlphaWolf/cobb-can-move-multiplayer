@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>COBB CAN MOVE — Multiplayer Survival Horror</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=VT323&display=swap" rel="stylesheet">
+  <!-- Phaser 3 (WebGL Game Engine with Light2D) -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+  <!-- Socket.IO Client -->
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <!-- Retro CRT Scanline & Vignette Effect -->
+  <div class="crt-overlay"></div>
+
+  <!-- Game Canvas Container -->
+  <div id="game-container"></div>
+
+  <!-- HTML UI Overlays for Lobby, Chat, and Modals -->
+  <div id="ui-overlay" class="ui-layer">
+    <!-- Main Menu / Lobby Modal -->
+    <div id="menu-modal" class="modal-box">
+      <div class="game-header">
+        <h1 class="glitch-title" data-text="COBB CAN MOVE">COBB CAN MOVE</h1>
+        <div class="subtitle">A MULTIPLAYER SURVIVAL HORROR GAME WHERE RULES CHANGE</div>
+      </div>
+
+      <!-- Initial View: Solo / Create / Join -->
+      <div id="view-initial" class="menu-view active">
+        <div class="input-group">
+          <label for="player-name">YOUR CODENAME</label>
+          <input type="text" id="player-name" maxlength="14" placeholder="WARDEN" value="Warden">
+        </div>
+
+        <div class="button-stack">
+          <button id="btn-solo" class="btn btn-primary">▶ SOLO RUN (OFFLINE)</button>
+          <button id="btn-create-room" class="btn btn-accent">⚡ CREATE MULTIPLAYER ROOM</button>
+          <div class="join-row">
+            <input type="text" id="input-room-code" placeholder="ROOM CODE" maxlength="4">
+            <button id="btn-join-room" class="btn btn-secondary">JOIN ROOM</button>
+          </div>
+        </div>
+
+        <div class="controls-hint">
+          <span>[W,A,S,D] MOVE</span> • <span>[SHIFT] SPRINT</span> • <span>[E / SPACE] INTERACT</span> • <span>[M] FACILITY MAP</span>
+        </div>
+      </div>
+
+      <!-- Lobby View: Connected Players, Ready, Chat -->
+      <div id="view-lobby" class="menu-view">
+        <div class="lobby-header">
+          <div class="room-code-tag">ROOM CODE: <span id="display-room-code">----</span></div>
+          <button id="btn-copy-code" class="btn-sm">COPY LINK</button>
+        </div>
+
+        <div class="lobby-columns">
+          <div class="lobby-players-box">
+            <h3>CONNECTED SURVIVORS (<span id="player-count">1</span>/8)</h3>
+            <div id="lobby-player-list" class="player-list"></div>
+
+            <div class="lobby-settings">
+              <label>GAME MODE:</label>
+              <select id="select-game-mode">
+                <option value="coop">🤝 CO-OP SURVIVAL (Team Escape)</option>
+                <option value="versus">🔪 VERSUS (One Player is Cobb)</option>
+                <option value="race">🏁 RACE MODE (Competitive Sabotage)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="lobby-chat-box">
+            <h3>FACILITY COMM</h3>
+            <div id="chat-messages" class="chat-messages"></div>
+            <div class="chat-input-bar">
+              <input type="text" id="chat-input" placeholder="Type radio message..." maxlength="100">
+              <button id="btn-chat-send" class="btn-sm">SEND</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="lobby-footer">
+          <button id="btn-lobby-leave" class="btn btn-secondary">LEAVE</button>
+          <button id="btn-lobby-ready" class="btn btn-accent">READY</button>
+          <button id="btn-lobby-start" class="btn btn-primary hidden">START GAME</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-Game HUD Overlay (HUD Elements rendered on top of canvas) -->
+  <div id="game-hud" class="hud-layer hidden">
+    <!-- Rule Announcement Banner -->
+    <div id="rule-banner" class="rule-banner hidden">
+      <div class="rule-title-box">
+        <span class="warning-icon">⚠️ RULE DETECTED</span>
+        <h2 id="banner-rule-text">COBB CAN MOVE</h2>
+      </div>
+      <p id="banner-rule-sub">Cobb roams the facility. Avoid contact at all costs.</p>
+    </div>
+
+    <!-- Top Status Bar -->
+    <div class="hud-top-bar">
+      <div class="hud-badge coal-badge">
+        <span class="badge-icon">⬛</span>
+        <span>COAL: <strong id="hud-coal-count">0 / 8</strong></span>
+      </div>
+      <div class="hud-badge furnace-badge">
+        <span class="badge-icon">🔥</span>
+        <span>EXIT: <strong id="hud-exit-status" class="locked">LOCKED</strong></span>
+      </div>
+      <div id="hud-freeze-container" class="hud-badge freeze-badge hidden">
+        <span class="badge-icon">❄️</span>
+        <span>WARMTH: <strong id="hud-warmth">100%</strong></span>
+      </div>
+      <div id="hud-starve-container" class="hud-badge starve-badge hidden">
+        <span class="badge-icon">🥕</span>
+        <span>HUNGER: <strong id="hud-hunger">100%</strong></span>
+      </div>
+    </div>
+    
+    <!-- Top-Right Minimap Radar -->
+    <div class="hud-minimap-box" id="minimap-box">
+      <div class="minimap-header">
+        <span>FACILITY RADAR</span>
+        <button id="btn-toggle-map" class="minimap-toggle-btn">[M] FULL</button>
+      </div>
+      <canvas id="minimap-canvas" width="184" height="144"></canvas>
+      <div class="minimap-legend">
+        <span class="legend-item"><span class="legend-dot player"></span>YOU</span>
+        <span class="legend-item"><span class="legend-dot furnace"></span>FURNACE</span>
+        <span class="legend-item"><span class="legend-dot coal"></span>COAL</span>
+        <span class="legend-item"><span class="legend-dot exit"></span>EXIT</span>
+      </div>
+    </div>
+
+    <!-- Bottom Stamina Bar -->
+    <div class="hud-bottom-bar">
+      <div class="stamina-wrapper">
+        <div class="stamina-label">STAMINA [SHIFT]</div>
+        <div class="stamina-track">
+          <div id="stamina-fill" class="stamina-fill" style="width: 100%;"></div>
+        </div>
+      </div>
+      <div id="hud-item-slot" class="item-slot">
+        <span class="slot-label">[E] HELD</span>
+        <span id="held-item-name">HANDS EMPTY</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Game Scripts -->
+  <script src="js/utils/constants.js"></script>
+  <script src="js/utils/MapGenerator.js"></script>
+  <script src="js/scenes/BootScene.js"></script>
+  <script src="js/scenes/GameScene.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
