@@ -4,16 +4,19 @@ const { Server } = require('socket.io');
 const path = require('path');
 const RoomManager = require('./RoomManager');
 const CONSTANTS = require('./constants');
-const MapGenerator = require('./MapGenerator');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' }
-});
+const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 const roomManager = new RoomManager();
+
+// Server-side reach is a bit more generous than the client's to absorb latency
+const REACH_SLACK = 40;
+const CHAT_MAX_LENGTH = 100;
+const CHAT_MIN_INTERVAL = 400;
+const MOVE_MIN_INTERVAL = 30;
 
 // Serve static client files
 app.use(express.static(path.join(__dirname, '../client')));
@@ -23,200 +26,218 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', activeRooms: roomManager.rooms.size });
 });
 
+const isObject = (v) => v !== null && typeof v === 'object';
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const cleanText = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const near = (p, target, radius) => Math.hypot(p.x - target.x, p.y - target.y) <= radius;
+
 // Socket.IO real-time multiplayer connections
 io.on('connection', (socket) => {
   console.log(`[Socket] Player connected: ${socket.id}`);
 
-  // Create Room
-  socket.on('room:create', (options, callback) => {
-    const room = roomManager.createRoom(socket.id, options);
-    const player = roomManager.addPlayer(room.code, socket.id, options.playerData || {});
+  // Every handler gets an object payload and a callable ack, and can never crash the process
+  const on = (event, handler) => {
+    socket.on(event, (payload, ack) => {
+      try {
+        handler(isObject(payload) ? payload : {}, typeof ack === 'function' ? ack : () => {});
+      } catch (err) {
+        console.error(`[Socket] ${event} from ${socket.id} failed:`, err);
+      }
+    });
+  };
+
+  const fail = (ack, message) => {
+    const err = { success: false, message };
+    ack(err);
+    socket.emit('room:error', err);
+  };
+
+  // Room and player for this socket, optionally only while a round is running
+  const current = (playingOnly) => {
+    const room = roomManager.getRoom(socket.roomCode);
+    const player = room && room.players.get(socket.id);
+    if (!player || (playingOnly && room.state !== 'PLAYING')) return {};
+    return { room, player };
+  };
+
+  const enterRoom = (room, playerData, ack) => {
+    const player = roomManager.addPlayer(room.code, socket.id, {
+      name: cleanText(isObject(playerData) ? playerData.name : '', 14)
+    });
     socket.join(room.code);
     socket.roomCode = room.code;
 
-    const response = {
-      success: true,
-      roomCode: room.code,
-      player,
-      room: serializeRoom(room)
-    };
-    if (typeof callback === 'function') callback(response);
+    const response = { success: true, roomCode: room.code, player, room: serializeRoom(room) };
+    ack(response);
     socket.emit('room:joined', response);
+    io.to(room.code).emit('room:updated', { room: serializeRoom(room) });
+  };
+
+  // Create Room
+  on('room:create', ({ mode, playerData }, ack) => {
+    if (socket.roomCode) return fail(ack, 'Already in a room.');
+    const room = roomManager.createRoom(socket.id, { mode });
+    enterRoom(room, playerData, ack);
   });
 
   // Join Room
-  socket.on('room:join', ({ roomCode, playerData }, callback) => {
+  on('room:join', ({ roomCode, playerData }, ack) => {
+    if (socket.roomCode) return fail(ack, 'Already in a room.');
     const room = roomManager.getRoom(roomCode);
-    if (!room) {
-      const err = { success: false, message: 'Room not found! Check room code.' };
-      if (typeof callback === 'function') callback(err);
-      socket.emit('room:error', err);
-      return;
-    }
-    if (room.state !== 'LOBBY') {
-      const err = { success: false, message: 'Game already in progress!' };
-      if (typeof callback === 'function') callback(err);
-      socket.emit('room:error', err);
-      return;
-    }
+    if (!room) return fail(ack, 'Room not found! Check room code.');
+    if (room.state !== 'LOBBY') return fail(ack, 'Game already in progress!');
+    if (room.players.size >= room.maxPlayers) return fail(ack, `Room is full (${room.maxPlayers} max).`);
+    enterRoom(room, playerData, ack);
+  });
 
-    const player = roomManager.addPlayer(room.code, socket.id, playerData || {});
-    socket.join(room.code);
-    socket.roomCode = room.code;
-
-    const response = {
-      success: true,
-      roomCode: room.code,
-      player,
-      room: serializeRoom(room)
-    };
-    if (typeof callback === 'function') callback(response);
-    socket.emit('room:joined', response);
-
-    // Notify room of new player
+  // Lobby settings (Host only)
+  on('room:settings', ({ mode }) => {
+    const { room } = current(false);
+    if (!room || room.hostId !== socket.id || room.state !== 'LOBBY') return;
+    if (!RoomManager.MODES.includes(mode)) return;
+    room.mode = mode;
     io.to(room.code).emit('room:updated', { room: serializeRoom(room) });
   });
 
   // Toggle Ready
-  socket.on('room:ready', ({ ready }) => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room || !room.players.has(socket.id)) return;
-    const player = room.players.get(socket.id);
-    player.ready = ready;
+  on('room:ready', ({ ready }) => {
+    const { room, player } = current(false);
+    if (!room || room.state !== 'LOBBY' || player.ready === (ready === true)) return;
+    player.ready = ready === true;
     io.to(room.code).emit('room:updated', { room: serializeRoom(room) });
   });
 
-  // Start Game (Host only)
-  socket.on('game:start', () => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room || room.hostId !== socket.id) return;
+  // Start Game (Host only, everyone else ready)
+  on('game:start', (payload, ack) => {
+    const { room } = current(false);
+    if (!room || room.hostId !== socket.id || room.state !== 'LOBBY') return;
+    const waiting = Array.from(room.players.values()).filter(p => !p.isHost && !p.ready);
+    if (waiting.length) {
+      return fail(ack, `Waiting for ${waiting.map(p => p.name).join(', ')} to ready up.`);
+    }
 
-    room.state = 'PLAYING';
-    room.stats.startTime = Date.now();
+    roomManager.startRound(room);
 
     // Assign roles in versus mode if selected
     if (room.mode === 'versus') {
       const playerIds = Array.from(room.players.keys());
       const cobbId = playerIds[Math.floor(Math.random() * playerIds.length)];
-      room.players.forEach((p, id) => {
-        p.role = id === cobbId ? 'COBB' : 'SURVIVOR';
-      });
+      room.players.get(cobbId).role = 'COBB';
     }
 
-    io.to(room.code).emit('game:started', { room: serializeRoom(room) });
+    ack({ success: true });
+    io.to(room.code).emit('game:started', { room: serializeRoom(room, true) });
   });
 
-  // Player Movement & Input Sync
-  socket.on('player:move', (data) => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room || !room.players.has(socket.id)) return;
+  // Full round state for a client whose scene just booted (it may have missed events while loading)
+  on('game:sync', (payload, ack) => {
+    const { room } = current(true);
+    if (room) ack({ room: serializeRoom(room, true) });
+  });
 
-    const player = room.players.get(socket.id);
-    player.x = data.x;
-    player.y = data.y;
-    player.vx = data.vx || 0;
-    player.vy = data.vy || 0;
-    player.isSprinting = data.isSprinting || false;
-    player.hasCoal = data.hasCoal || false;
+  // Player Movement Sync (client owns its position, server caps the speed)
+  on('player:move', ({ x, y, flipX, isSprinting }) => {
+    const { room, player } = current(true);
+    if (!room || player.isEscaped || !isNum(x) || !isNum(y)) return;
 
-    // Relay delta movement to other players in room
+    const ts = CONSTANTS.TILE_SIZE;
+    const now = Date.now();
+    // Client sends every 50 ms; anything much faster is flooding
+    if (now - player.lastMoveAt < MOVE_MIN_INTERVAL) return;
+    const dt = player.lastMoveAt ? Math.min(now - player.lastMoveAt, 1000) : 1000;
+    // Slack covers network jitter and Cobb's knockback shove
+    const maxStep = CONSTANTS.PLAYER.SPRINT_SPEED * (dt / 1000) * 1.5 + 80;
+    const inBounds = x >= 0 && y >= 0 && x <= room.mapData.width * ts && y <= room.mapData.height * ts;
+
+    if (!inBounds || Math.hypot(x - player.x, y - player.y) > maxStep) {
+      socket.emit('player:correct', { x: player.x, y: player.y });
+      return;
+    }
+
+    player.x = x;
+    player.y = y;
+    player.flipX = flipX === true;
+    player.isSprinting = isSprinting === true;
+    player.lastMoveAt = now;
+
     socket.to(room.code).emit('player:moved', {
       id: socket.id,
-      x: player.x,
-      y: player.y,
-      vx: player.vx,
-      vy: player.vy,
-      isSprinting: player.isSprinting,
-      hasCoal: player.hasCoal
+      x,
+      y,
+      flipX: player.flipX,
+      isSprinting: player.isSprinting
     });
   });
 
   // Coal Picked Up
-  socket.on('coal:pickup', ({ coalId }) => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room) return;
+  on('coal:pickup', ({ coalId }) => {
+    const { room, player } = current(true);
+    if (!room || player.hasCoal || player.isEscaped) return;
     const coal = room.mapData.coal.find(c => c.id === coalId);
-    if (coal && !coal.collected) {
-      coal.collected = true;
-      const player = room.players.get(socket.id);
-      if (player) player.hasCoal = true;
+    if (!coal || coal.collected) return;
+    if (!near(player, coal, CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
 
-      io.to(room.code).emit('coal:updated', {
-        coalId,
-        collectedBy: socket.id
-      });
-    }
+    coal.collected = true;
+    player.hasCoal = true;
+    io.to(room.code).emit('coal:updated', { coalId, collectedBy: socket.id });
   });
 
   // Coal Deposited in Furnace
-  socket.on('furnace:deposit', () => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room) return;
-    const player = room.players.get(socket.id);
-    if (player && player.hasCoal) {
-      player.hasCoal = false;
-      room.mapData.furnace.coalDeposited += 1;
+  on('furnace:deposit', () => {
+    const { room, player } = current(true);
+    if (!room || !player.hasCoal) return;
+    const furnace = room.mapData.furnace;
+    if (!near(player, furnace, CONSTANTS.PLAYER.INTERACTION_RADIUS + 25 + REACH_SLACK)) return;
 
-      const isUnlocked = room.mapData.furnace.coalDeposited >= room.mapData.furnace.coalRequired;
-      if (isUnlocked) {
-        room.mapData.exit.unlocked = true;
-      }
-
-      io.to(room.code).emit('furnace:updated', {
-        depositedBy: socket.id,
-        coalDeposited: room.mapData.furnace.coalDeposited,
-        coalRequired: room.mapData.furnace.coalRequired,
-        exitUnlocked: room.mapData.exit.unlocked
-      });
+    player.hasCoal = false;
+    furnace.coalDeposited += 1;
+    if (furnace.coalDeposited >= furnace.coalRequired) {
+      room.mapData.exit.unlocked = true;
     }
+
+    io.to(room.code).emit('furnace:updated', {
+      depositedBy: socket.id,
+      coalDeposited: furnace.coalDeposited,
+      coalRequired: furnace.coalRequired,
+      exitUnlocked: room.mapData.exit.unlocked
+    });
   });
 
   // Breaker Switch Flipped
-  socket.on('breaker:toggle', ({ breakerId }) => {
-    const room = roomManager.getRoom(socket.roomCode);
+  on('breaker:toggle', ({ breakerId }) => {
+    const { room, player } = current(true);
     if (!room) return;
     const breaker = room.mapData.breakers.find(b => b.id === breakerId);
-    if (breaker) {
-      breaker.active = !breaker.active;
-      io.to(room.code).emit('breaker:updated', {
-        breakerId,
-        active: breaker.active,
-        triggeredBy: socket.id
-      });
-    }
+    if (!breaker || !near(player, breaker, CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
+
+    breaker.active = !breaker.active;
+    io.to(room.code).emit('breaker:updated', { breakerId, active: breaker.active, triggeredBy: socket.id });
   });
 
   // Player Escape
-  socket.on('player:escape', () => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room) return;
-    const player = room.players.get(socket.id);
-    if (player && !player.isEscaped) {
-      player.isEscaped = true;
-      io.to(room.code).emit('player:escaped', { id: socket.id, name: player.name });
+  on('player:escape', () => {
+    const { room, player } = current(true);
+    if (!room || player.isEscaped || !room.mapData.exit.unlocked) return;
+    if (!near(player, room.mapData.exit, CONSTANTS.PLAYER.INTERACTION_RADIUS + 15 + REACH_SLACK)) return;
 
-      // Check if all active survivors escaped
-      const survivors = Array.from(room.players.values()).filter(p => p.role === 'SURVIVOR');
-      const allDone = survivors.every(p => p.isEscaped || p.isDowned);
-      if (allDone) {
-        io.to(room.code).emit('game:round_over', {
-          won: survivors.some(p => p.isEscaped),
-          room: serializeRoom(room)
-        });
-      }
-    }
+    player.isEscaped = true;
+    player.hasCoal = false;
+    io.to(room.code).emit('player:escaped', { id: socket.id, name: player.name });
+    checkRoundOver(room);
   });
 
   // Chat message
-  socket.on('chat:send', ({ message }) => {
-    const room = roomManager.getRoom(socket.roomCode);
-    if (!room) return;
-    const player = room.players.get(socket.id);
-    const name = player ? player.name : 'Unknown';
+  on('chat:send', ({ message }) => {
+    const { room, player } = current(false);
+    const text = cleanText(message, CHAT_MAX_LENGTH);
+    const now = Date.now();
+    if (!room || !text || now - (socket.lastChatAt || 0) < CHAT_MIN_INTERVAL) return;
+    socket.lastChatAt = now;
+
     io.to(room.code).emit('chat:received', {
-      sender: name,
+      sender: player.name,
       senderId: socket.id,
-      message,
+      message: text,
       time: new Date().toLocaleTimeString()
     });
   });
@@ -225,22 +246,46 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`[Socket] Player disconnected: ${socket.id}`);
     const result = roomManager.removePlayer(socket.id);
-    if (result && result.room) {
-      io.to(result.code).emit('room:updated', { room: serializeRoom(result.room) });
+    if (result && result.room.players.size > 0) {
       io.to(result.code).emit('player:left', { id: socket.id });
+      checkRoundOver(result.room);
+      io.to(result.code).emit('room:updated', { room: serializeRoom(result.room) });
     }
   });
 });
 
-function serializeRoom(room) {
+// Round ends once every survivor still in the room has escaped or gone down
+function checkRoundOver(room) {
+  if (room.state !== 'PLAYING') return;
+  const survivors = Array.from(room.players.values()).filter(p => p.role === 'SURVIVOR');
+  if (!survivors.every(p => p.isEscaped || p.isDowned)) return;
+
+  const results = {
+    won: survivors.some(p => p.isEscaped),
+    durationMs: Date.now() - room.stats.startTime,
+    players: Array.from(room.players.values()).map(p => ({
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      escaped: p.isEscaped,
+      downed: p.isDowned
+    }))
+  };
+  roomManager.endRound(room);
+  io.to(room.code).emit('game:round_over', { results, room: serializeRoom(room) });
+}
+
+// The map is only needed in-game, so lobby updates leave it out
+function serializeRoom(room, withMap = false) {
   return {
     code: room.code,
     hostId: room.hostId,
     state: room.state,
     mode: room.mode,
     level: room.level,
+    maxPlayers: room.maxPlayers,
     activeRules: room.activeRules,
-    mapData: room.mapData,
+    mapData: withMap ? room.mapData : undefined,
     players: Array.from(room.players.entries()).map(([id, p]) => ({
       id,
       name: p.name,
@@ -250,6 +295,7 @@ function serializeRoom(room) {
       role: p.role,
       x: p.x,
       y: p.y,
+      flipX: p.flipX,
       isSprinting: p.isSprinting,
       hasCoal: p.hasCoal,
       isDowned: p.isDowned,

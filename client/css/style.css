@@ -621,3 +621,46 @@ input[type="text"]:focus, select:focus {
 .hidden {
   display: none !important;
 }
+
+/* Menu status line (errors, waiting messages) */
+.menu-status {
+  min-height: 18px;
+  margin: -12px 0 12px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--accent-red);
+}
+
+/* Round results */
+.results-title {
+  font-family: var(--font-retro);
+  font-size: 40px;
+  letter-spacing: 3px;
+  text-align: center;
+}
+
+.results-title.won {
+  color: var(--accent-green);
+  text-shadow: 0 0 10px rgba(56, 239, 125, 0.5);
+}
+
+.results-title.lost {
+  color: var(--accent-red);
+  text-shadow: 0 0 10px rgba(255, 51, 68, 0.5);
+}
+
+.results-time {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 6px 0 16px;
+}
+
+#view-results .player-list {
+  min-height: 0;
+  margin-bottom: 20px;
+}
+
+select:disabled {
+  opacity: 0.6;
+}

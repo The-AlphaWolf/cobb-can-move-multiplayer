@@ -19,7 +19,7 @@ class BootScene extends Phaser.Scene {
 
   create() {
     console.log('[BootScene] Crisp retro pixel art textures generated.');
-    this.scene.start('GameScene');
+    this.scene.start('GameScene', { room: this.registry.get('room') });
   }
 
   // Dungeon Paved Stone Floor (32x32) - Clean, readable, textured

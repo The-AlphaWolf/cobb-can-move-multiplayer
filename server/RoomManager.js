@@ -1,6 +1,9 @@
 const MapGenerator = require('./MapGenerator');
 const CONSTANTS = require('./constants');
 
+// Modes players can pick; add 'versus' and 'race' here once they are built
+const MODES = ['coop'];
+
 class RoomManager {
   constructor() {
     this.rooms = new Map();
@@ -15,33 +18,26 @@ class RoomManager {
     return this.rooms.has(code) ? this.generateRoomCode() : code;
   }
 
+  generateMap() {
+    return new MapGenerator(Date.now()).generate(CONSTANTS.MAP.DEFAULT_WIDTH, CONSTANTS.MAP.DEFAULT_HEIGHT);
+  }
+
   createRoom(hostSocketId, options = {}) {
     const roomCode = this.generateRoomCode();
-    const mapGen = new MapGenerator(Date.now());
-    const mapData = mapGen.generate(CONSTANTS.MAP.DEFAULT_WIDTH, CONSTANTS.MAP.DEFAULT_HEIGHT, {
-      playerCount: options.maxPlayers || 4
-    });
+    const mapData = this.generateMap();
 
     const room = {
       code: roomCode,
       hostId: hostSocketId,
-      state: 'LOBBY', // LOBBY, PLAYING, ROUND_OVER, GAME_OVER
-      mode: options.mode || 'coop', // coop, versus, race
+      state: 'LOBBY', // LOBBY, PLAYING
+      mode: MODES.includes(options.mode) ? options.mode : 'coop',
       level: 1,
       activeRules: [CONSTANTS.RULES.COBB_MOVE],
       mapData,
+      // One player per spawn point until maps scale with player count
+      maxPlayers: mapData.playerSpawns.length,
       players: new Map(),
-      cobb: {
-        x: mapData.cobbSpawn.x,
-        y: mapData.cobbSpawn.y,
-        vx: 0,
-        vy: 0,
-        state: 'WANDER',
-        targetPlayerId: null,
-        stunnedUntil: 0
-      },
       stats: {
-        coalDeposited: 0,
         startTime: Date.now()
       }
     };
@@ -51,7 +47,7 @@ class RoomManager {
   }
 
   getRoom(roomCode) {
-    return this.rooms.get(roomCode ? roomCode.toUpperCase() : '');
+    return typeof roomCode === 'string' ? this.rooms.get(roomCode.toUpperCase()) : undefined;
   }
 
   addPlayer(roomCode, socketId, playerData = {}) {
@@ -59,31 +55,55 @@ class RoomManager {
     if (!room) return null;
 
     const playerIndex = room.players.size;
-    const spawn = room.mapData.playerSpawns[playerIndex % room.mapData.playerSpawns.length];
-
     const player = {
       id: socketId,
       name: playerData.name || `Survivor ${playerIndex + 1}`,
-      color: playerData.color || this.getPlayerColor(playerIndex),
+      color: this.nextColor(room),
       isHost: room.hostId === socketId,
       ready: false,
       role: 'SURVIVOR', // SURVIVOR, COBB (for versus)
-      x: spawn.x,
-      y: spawn.y,
-      vx: 0,
-      vy: 0,
-      stamina: CONSTANTS.PLAYER.MAX_STAMINA,
+      x: 0,
+      y: 0,
+      flipX: false,
+      lastMoveAt: 0,
       isSprinting: false,
       hasCoal: false,
-      rocksCount: 0,
-      warmth: CONSTANTS.PLAYER.WARMTH_MAX,
-      hunger: CONSTANTS.PLAYER.HUNGER_MAX,
       isDowned: false,
       isEscaped: false
     };
+    this.placeAtSpawn(room, player, playerIndex);
 
     room.players.set(socketId, player);
     return player;
+  }
+
+  placeAtSpawn(room, player, index) {
+    const spawn = room.mapData.playerSpawns[index % room.mapData.playerSpawns.length];
+    player.x = spawn.x;
+    player.y = spawn.y;
+  }
+
+  // Fresh map and player state for a new round
+  startRound(room) {
+    room.mapData = this.generateMap();
+    room.state = 'PLAYING';
+    room.stats.startTime = Date.now();
+
+    let index = 0;
+    room.players.forEach((p) => {
+      this.placeAtSpawn(room, p, index++);
+      p.hasCoal = false;
+      p.isDowned = false;
+      p.isEscaped = false;
+      p.isSprinting = false;
+      p.lastMoveAt = 0;
+      p.role = 'SURVIVOR';
+    });
+  }
+
+  endRound(room) {
+    room.state = 'LOBBY';
+    room.players.forEach((p) => { p.ready = false; });
   }
 
   removePlayer(socketId) {
@@ -104,7 +124,9 @@ class RoomManager {
     return null;
   }
 
-  getPlayerColor(index) {
+  // First colour nobody in the room is using
+  nextColor(room) {
+    const used = new Set(Array.from(room.players.values(), p => p.color));
     const colors = [
       0x4aa8ff, // Cyan / Blue
       0xffa338, // Amber / Orange
@@ -115,8 +137,9 @@ class RoomManager {
       0x4dd0e1, // Teal
       0xff5252  // Coral Red
     ];
-    return colors[index % colors.length];
+    return colors.find(c => !used.has(c)) || colors[0];
   }
 }
 
+RoomManager.MODES = MODES;
 module.exports = RoomManager;

@@ -8,7 +8,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const uiOverlay = document.getElementById('ui-overlay');
   const viewInitial = document.getElementById('view-initial');
   const viewLobby = document.getElementById('view-lobby');
+  const viewResults = document.getElementById('view-results');
   const gameHud = document.getElementById('game-hud');
+  const menuStatus = document.getElementById('menu-status');
 
   const inputPlayerName = document.getElementById('player-name');
   const btnSolo = document.getElementById('btn-solo');
@@ -20,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnCopyCode = document.getElementById('btn-copy-code');
   const lobbyPlayerList = document.getElementById('lobby-player-list');
   const playerCountElem = document.getElementById('player-count');
+  const maxPlayersElem = document.getElementById('max-players');
   const selectGameMode = document.getElementById('select-game-mode');
   const btnLobbyLeave = document.getElementById('btn-lobby-leave');
   const btnLobbyReady = document.getElementById('btn-lobby-ready');
@@ -29,15 +32,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const chatInput = document.getElementById('chat-input');
   const btnChatSend = document.getElementById('btn-chat-send');
 
+  const resultsTitle = document.getElementById('results-title');
+  const resultsTime = document.getElementById('results-time');
+  const resultsList = document.getElementById('results-list');
+  const btnResultsContinue = document.getElementById('btn-results-continue');
+
   let currentRoom = null;
   let isReady = false;
   let phaserGame = null;
 
+  const colorHex = (color) => `#${color.toString(16).padStart(6, '0')}`;
+
+  function setStatus(message) {
+    menuStatus.textContent = message || '';
+  }
+
+  function showView(view) {
+    [viewInitial, viewLobby, viewResults].forEach(v => v.classList.toggle('active', v === view));
+    setStatus('');
+  }
+
   // 3. Initialize Phaser 3 Game
-  function initPhaser(roomData = null) {
-    if (phaserGame) {
-      phaserGame.destroy(true);
-    }
+  function initPhaser(room) {
+    stopPhaser();
 
     const config = {
       type: Phaser.WEBGL, // Required for Light2D pipeline
@@ -60,30 +77,37 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     phaserGame = new Phaser.Game(config);
-
-    // Pass room data when starting GameScene
-    phaserGame.events.once('ready', () => {
-      // Scene manager takes over
-    });
+    // BootScene hands this to GameScene once textures are ready
+    phaserGame.registry.set('room', room);
   }
 
-  // 4. Solo Offline Run
+  function stopPhaser() {
+    if (phaserGame) {
+      phaserGame.destroy(true);
+      phaserGame = null;
+    }
+  }
+
+  function playerName() {
+    return inputPlayerName.value.trim() || 'Warden';
+  }
+
+  // 4. Solo Run: a private one-player room that starts straight away
   btnSolo.addEventListener('click', () => {
-    uiOverlay.classList.add('hidden');
-    gameHud.classList.remove('hidden');
-    initPhaser(null);
+    socket.emit('room:create', { mode: 'coop', playerData: { name: playerName() } }, (res) => {
+      if (!res || !res.success) return setStatus(res ? res.message : 'Could not start solo run.');
+      currentRoom = res.room;
+      socket.emit('game:start');
+    });
   });
 
   // 5. Create Multiplayer Room
   btnCreateRoom.addEventListener('click', () => {
-    const name = inputPlayerName.value.trim() || 'Warden';
-    socket.emit('room:create', {
-      mode: selectGameMode.value,
-      playerData: { name }
-    }, (res) => {
+    socket.emit('room:create', { mode: 'coop', playerData: { name: playerName() } }, (res) => {
       if (res && res.success) {
-        currentRoom = res.room;
         showLobbyView(res.room);
+      } else {
+        setStatus(res ? res.message : 'Could not create room.');
       }
     });
   });
@@ -91,45 +115,54 @@ document.addEventListener('DOMContentLoaded', () => {
   // 6. Join Multiplayer Room
   btnJoinRoom.addEventListener('click', () => {
     const code = inputRoomCode.value.trim().toUpperCase();
-    const name = inputPlayerName.value.trim() || 'Warden';
-    if (!code || code.length !== 4) {
-      alert('Please enter a valid 4-character Room Code!');
+    if (code.length !== 4) {
+      setStatus('Please enter a valid 4-character Room Code!');
       return;
     }
 
-    socket.emit('room:join', {
-      roomCode: code,
-      playerData: { name }
-    }, (res) => {
+    socket.emit('room:join', { roomCode: code, playerData: { name: playerName() } }, (res) => {
       if (res && res.success) {
-        currentRoom = res.room;
         showLobbyView(res.room);
       } else {
-        alert(res ? res.message : 'Could not join room.');
+        setStatus(res ? res.message : 'Could not join room.');
       }
     });
   });
 
   // 7. Copy Room Code
   btnCopyCode.addEventListener('click', () => {
-    if (currentRoom) {
-      navigator.clipboard.writeText(currentRoom.code);
-      btnCopyCode.textContent = 'COPIED!';
-      setTimeout(() => btnCopyCode.textContent = 'COPY LINK', 1500);
-    }
+    if (!currentRoom) return;
+    const flash = (text) => {
+      btnCopyCode.textContent = text;
+      setTimeout(() => btnCopyCode.textContent = 'COPY CODE', 1500);
+    };
+    // navigator.clipboard is missing on plain-http LAN addresses
+    if (!navigator.clipboard) return flash('COPY BLOCKED');
+    navigator.clipboard.writeText(currentRoom.code).then(() => flash('COPIED!'), () => flash('COPY BLOCKED'));
   });
 
   // 8. Ready Toggle
-  btnLobbyReady.addEventListener('click', () => {
-    isReady = !isReady;
+  function setReady(ready) {
+    isReady = ready;
     btnLobbyReady.textContent = isReady ? 'NOT READY' : 'READY';
     btnLobbyReady.className = isReady ? 'btn btn-secondary' : 'btn btn-accent';
+  }
+
+  btnLobbyReady.addEventListener('click', () => {
+    setReady(!isReady);
     socket.emit('room:ready', { ready: isReady });
   });
 
   // 9. Host Start Game
   btnLobbyStart.addEventListener('click', () => {
-    socket.emit('game:start');
+    socket.emit('game:start', {}, (res) => {
+      if (res && !res.success) setStatus(res.message);
+    });
+  });
+
+  // Host-only game mode
+  selectGameMode.addEventListener('change', () => {
+    socket.emit('room:settings', { mode: selectGameMode.value });
   });
 
   // 10. Leave Lobby
@@ -151,10 +184,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') sendChat();
   });
 
+  btnResultsContinue.addEventListener('click', () => {
+    showLobbyView(currentRoom);
+  });
+
   // Helper: Transition to Lobby View
   function showLobbyView(room) {
-    viewInitial.classList.remove('active');
-    viewLobby.classList.add('active');
+    showView(viewLobby);
     displayRoomCode.textContent = room.code;
     updateLobbyUI(room);
   }
@@ -162,31 +198,58 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateLobbyUI(room) {
     currentRoom = room;
     playerCountElem.textContent = room.players.length;
+    maxPlayersElem.textContent = room.maxPlayers;
     lobbyPlayerList.innerHTML = '';
 
     const isHost = room.hostId === socket.id;
-    if (isHost) {
-      btnLobbyStart.classList.remove('hidden');
-    } else {
-      btnLobbyStart.classList.add('hidden');
-    }
+    btnLobbyStart.classList.toggle('hidden', !isHost);
+    btnLobbyReady.classList.toggle('hidden', isHost); // the host starts instead of readying
+    selectGameMode.disabled = !isHost;
+    selectGameMode.value = room.mode;
 
     room.players.forEach(p => {
       const card = document.createElement('div');
       card.className = 'player-card';
-      card.style.borderLeftColor = `#${p.color.toString(16).padStart(6, '0')}`;
+      card.style.borderLeftColor = colorHex(p.color);
 
       const nameSpan = document.createElement('span');
-      nameSpan.textContent = p.name + (p.isHost ? ' (HOST)' : '');
+      nameSpan.textContent = p.name;
 
       const statusSpan = document.createElement('span');
-      statusSpan.className = `player-status-tag ${p.ready ? 'ready' : ''}`;
-      statusSpan.textContent = p.ready ? 'READY' : 'WAITING';
+      const ready = p.isHost || p.ready;
+      statusSpan.className = `player-status-tag ${ready ? 'ready' : ''}`;
+      statusSpan.textContent = p.isHost ? 'HOST' : (p.ready ? 'READY' : 'WAITING');
 
       card.appendChild(nameSpan);
       card.appendChild(statusSpan);
       lobbyPlayerList.appendChild(card);
     });
+  }
+
+  function showResults({ won, durationMs, players }) {
+    resultsTitle.textContent = won ? 'ESCAPED' : 'LOST TO COBB';
+    resultsTitle.className = `results-title ${won ? 'won' : 'lost'}`;
+    const secs = Math.round(durationMs / 1000);
+    resultsTime.textContent = `ROUND TIME ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+
+    resultsList.innerHTML = '';
+    players.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'player-card';
+      card.style.borderLeftColor = colorHex(p.color);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = p.name;
+
+      const statusSpan = document.createElement('span');
+      statusSpan.className = `player-status-tag ${p.escaped ? 'ready' : ''}`;
+      statusSpan.textContent = p.escaped ? 'ESCAPED' : (p.downed ? 'CAUGHT' : 'TRAPPED');
+
+      card.appendChild(nameSpan);
+      card.appendChild(statusSpan);
+      resultsList.appendChild(card);
+    });
+    showView(viewResults);
   }
 
   // Socket Events
@@ -196,16 +259,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
   socket.on('game:started', ({ room }) => {
     console.log('[Socket] Game started! Launching dungeon...');
+    currentRoom = room;
     uiOverlay.classList.add('hidden');
     gameHud.classList.remove('hidden');
     initPhaser(room);
   });
 
+  socket.on('game:round_over', ({ results, room }) => {
+    stopPhaser();
+    gameHud.classList.add('hidden');
+    uiOverlay.classList.remove('hidden');
+    setReady(false);
+    updateLobbyUI(room);
+    showResults(results);
+  });
+
   socket.on('chat:received', (data) => {
     const msg = document.createElement('div');
     msg.className = 'chat-msg';
-    msg.innerHTML = `<span class="time">[${data.time}]</span> <span class="sender">${data.sender}:</span> ${data.message}`;
+
+    const time = document.createElement('span');
+    time.className = 'time';
+    time.textContent = `[${data.time}]`;
+
+    const sender = document.createElement('span');
+    sender.className = 'sender';
+    sender.textContent = `${data.sender}:`;
+
+    msg.append(time, ' ', sender, ' ', data.message);
     chatMessages.appendChild(msg);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+  });
+
+  socket.on('disconnect', () => {
+    stopPhaser();
+    gameHud.classList.add('hidden');
+    uiOverlay.classList.remove('hidden');
+    showView(viewInitial);
+    setStatus('Lost connection to the server. Reload to play again.');
   });
 });

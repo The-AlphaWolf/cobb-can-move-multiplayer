@@ -29,6 +29,8 @@
         <div class="subtitle">A MULTIPLAYER SURVIVAL HORROR GAME WHERE RULES CHANGE</div>
       </div>
 
+      <p id="menu-status" class="menu-status" role="status"></p>
+
       <!-- Initial View: Solo / Create / Join -->
       <div id="view-initial" class="menu-view active">
         <div class="input-group">
@@ -54,20 +56,20 @@
       <div id="view-lobby" class="menu-view">
         <div class="lobby-header">
           <div class="room-code-tag">ROOM CODE: <span id="display-room-code">----</span></div>
-          <button id="btn-copy-code" class="btn-sm">COPY LINK</button>
+          <button id="btn-copy-code" class="btn-sm">COPY CODE</button>
         </div>
 
         <div class="lobby-columns">
           <div class="lobby-players-box">
-            <h3>CONNECTED SURVIVORS (<span id="player-count">1</span>/8)</h3>
+            <h3>CONNECTED SURVIVORS (<span id="player-count">1</span>/<span id="max-players">4</span>)</h3>
             <div id="lobby-player-list" class="player-list"></div>
 
             <div class="lobby-settings">
               <label>GAME MODE:</label>
               <select id="select-game-mode">
                 <option value="coop">🤝 CO-OP SURVIVAL (Team Escape)</option>
-                <option value="versus">🔪 VERSUS (One Player is Cobb)</option>
-                <option value="race">🏁 RACE MODE (Competitive Sabotage)</option>
+                <option value="versus" disabled>🔪 VERSUS (One Player is Cobb) — SOON</option>
+                <option value="race" disabled>🏁 RACE MODE (Competitive Sabotage) — SOON</option>
               </select>
             </div>
           </div>
@@ -86,6 +88,16 @@
           <button id="btn-lobby-leave" class="btn btn-secondary">LEAVE</button>
           <button id="btn-lobby-ready" class="btn btn-accent">READY</button>
           <button id="btn-lobby-start" class="btn btn-primary hidden">START GAME</button>
+        </div>
+      </div>
+
+      <!-- Results View: shown when a round ends -->
+      <div id="view-results" class="menu-view">
+        <h2 id="results-title" class="results-title">ROUND OVER</h2>
+        <div id="results-time" class="results-time"></div>
+        <div id="results-list" class="player-list"></div>
+        <div class="lobby-footer">
+          <button id="btn-results-continue" class="btn btn-accent">BACK TO LOBBY</button>
         </div>
       </div>
     </div>
@@ -154,7 +166,6 @@
 
   <!-- Game Scripts -->
   <script src="js/utils/constants.js"></script>
-  <script src="js/utils/MapGenerator.js"></script>
   <script src="js/scenes/BootScene.js"></script>
   <script src="js/scenes/GameScene.js"></script>
   <script src="js/main.js"></script>

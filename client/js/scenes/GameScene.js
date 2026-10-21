@@ -4,22 +4,19 @@ class GameScene extends Phaser.Scene {
   }
 
   init(data) {
-    this.roomData = data ? data.room : null;
-    this.isOnline = !!this.roomData;
-    this.socket = window.gameSocket || null;
+    this.roomData = data.room;
+    this.socket = window.gameSocket;
+    this.myId = this.socket.id;
+    this.me = this.roomData.players.find(p => p.id === this.myId);
+    this.networkSendTimer = 0;
+    this.escaped = false;
   }
 
   create() {
     console.log('[GameScene] Initializing atmospheric horror dungeon...');
 
-    // 1. Generate or load procedural map
-    if (this.roomData && this.roomData.mapData) {
-      this.mapData = this.roomData.mapData;
-    } else {
-      // In Solo mode, generate using the universal MapGenerator
-      const generator = new window.MapGenerator(Date.now());
-      this.mapData = generator.generate(46, 36, { playerCount: 1 });
-    }
+    // 1. Map comes from the server so every player shares it
+    this.mapData = this.roomData.mapData;
 
     const ts = window.CONSTANTS.TILE_SIZE;
     const worldW = this.mapData.width * ts;
@@ -44,8 +41,11 @@ class GameScene extends Phaser.Scene {
     // 7. Spawn Cobb Monster
     this.createCobb();
 
-    // 8. Remote Players Container for Multiplayer
+    // 8. Remote Players, placed at their server-assigned spawns
     this.remotePlayers = new Map();
+    this.roomData.players
+      .filter(p => p.id !== this.myId && !p.isEscaped)
+      .forEach(p => this.addRemotePlayer(p));
 
     // 9. Setup Darkness / Horror Vision System
     this.createDarknessLayer(worldW, worldH);
@@ -69,10 +69,11 @@ class GameScene extends Phaser.Scene {
     });
     this.keyM = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
 
-    // 12. Setup Network Listeners if Online
-    if (this.isOnline && this.socket) {
-      this.setupNetworkHandlers();
-    }
+    // 12. Setup Network Listeners, then catch up on anything missed while booting
+    this.setupNetworkHandlers();
+    this.socket.emit('game:sync', {}, (res) => {
+      if (res && res.room && this.player.active) this.applySnapshot(res.room);
+    });
 
     // 13. Initialize Real-Time Facility Minimap Radar
     this.initMinimap();
@@ -139,8 +140,8 @@ class GameScene extends Phaser.Scene {
   }
 
   createPlayer() {
-    const spawn = (this.mapData.playerSpawns && this.mapData.playerSpawns[0]) || { x: 300, y: 300 };
-    this.player = this.physics.add.sprite(spawn.x, spawn.y, 'player_sprite');
+    this.player = this.physics.add.sprite(this.me.x, this.me.y, 'player_sprite');
+    this.player.setTint(this.me.color);
     this.player.setCollideWorldBounds(true);
     this.player.body.setSize(18, 18);
     this.player.body.setOffset(7, 7);
@@ -227,26 +228,61 @@ class GameScene extends Phaser.Scene {
   update(time, delta) {
     if (!this.player || !this.player.body) return;
 
-    this.handlePlayerMovement(delta);
-    this.handleInteractions();
-    this.updateCobbAI(delta);
+    if (!this.escaped) {
+      this.handlePlayerMovement(delta);
+      this.handleInteractions();
+      this.updateCobbAI(delta);
+    }
+    this.updateRemotePlayers(delta);
     this.updateDarkness();
     this.updateMinimap(delta);
 
     // Network Sync (20 ticks/sec)
-    if (this.isOnline && this.socket && this.networkSendTimer <= 0) {
+    this.networkSendTimer -= delta;
+    if (!this.escaped && this.networkSendTimer <= 0) {
       this.networkSendTimer = 50;
       this.socket.emit('player:move', {
         x: Math.round(this.player.x),
         y: Math.round(this.player.y),
-        vx: Math.round(this.player.body.velocity.x),
-        vy: Math.round(this.player.body.velocity.y),
-        isSprinting: this.player.isSprinting,
-        hasCoal: this.player.hasCoal
+        flipX: this.player.flipX,
+        isSprinting: this.player.isSprinting
       });
-    } else if (this.networkSendTimer > 0) {
-      this.networkSendTimer -= delta;
     }
+  }
+
+  addRemotePlayer(p) {
+    const remote = this.add.sprite(p.x, p.y, 'player_sprite');
+    remote.setDepth(10);
+    remote.setTint(p.color);
+    remote.setFlipX(!!p.flipX);
+    remote.targetX = p.x;
+    remote.targetY = p.y;
+    remote.colorHex = `#${p.color.toString(16).padStart(6, '0')}`;
+    remote.label = this.add.text(p.x, p.y - 14, p.name, {
+      fontFamily: 'Share Tech Mono, monospace',
+      fontSize: '8px',
+      color: remote.colorHex,
+      resolution: 4
+    }).setOrigin(0.5, 1).setDepth(12);
+    this.remotePlayers.set(p.id, remote);
+  }
+
+  removeRemotePlayer(id) {
+    const remote = this.remotePlayers.get(id);
+    if (!remote) return;
+    remote.label.destroy();
+    remote.destroy();
+    this.remotePlayers.delete(id);
+  }
+
+  // Ease remote players toward their latest reported position
+  updateRemotePlayers(delta) {
+    const t = Math.min(1, delta / 80);
+    this.remotePlayers.forEach((remote) => {
+      remote.x += (remote.targetX - remote.x) * t;
+      remote.y += (remote.targetY - remote.y) * t;
+      remote.label.setPosition(remote.x, remote.y - 14);
+    });
   }
 
   handlePlayerMovement(delta) {
@@ -319,7 +355,7 @@ class GameScene extends Phaser.Scene {
     if (!this.player.hasCoal) {
       for (const [id, sprite] of this.coalMap.entries()) {
         if (sprite.active && Phaser.Math.Distance.Between(px, py, sprite.x, sprite.y) <= radius) {
-          this.pickupCoal(id, sprite);
+          this.pickupCoal(id);
           return;
         }
       }
@@ -344,47 +380,17 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  pickupCoal(coalId, sprite) {
-    this.player.hasCoal = true;
-    sprite.destroy();
-    this.coalMap.delete(coalId);
-
-    if (this.isOnline && this.socket) {
-      this.socket.emit('coal:pickup', { coalId });
-    }
-
-    this.cameras.main.flash(150, 255, 170, 34);
-    this.updateHUD();
-    console.log(`[Game] Picked up coal: ${coalId}`);
+  // Item actions are requests; the server's reply decides who got what
+  pickupCoal(coalId) {
+    this.socket.emit('coal:pickup', { coalId });
   }
 
   depositCoal() {
-    this.player.hasCoal = false;
-    this.mapData.furnace.coalDeposited += 1;
-
-    const isUnlocked = this.mapData.furnace.coalDeposited >= this.mapData.furnace.coalRequired;
-    if (isUnlocked) {
-      this.mapData.exit.unlocked = true;
-      if (this.exitBeacon) this.exitBeacon.fillColor = 0x38ef7d;
-      this.cameras.main.flash(500, 56, 239, 125);
-    } else {
-      this.cameras.main.flash(200, 255, 100, 0);
-    }
-
-    if (this.isOnline && this.socket) {
-      this.socket.emit('furnace:deposit');
-    }
-
-    this.updateHUD();
-    console.log(`[Game] Deposited coal! Total: ${this.mapData.furnace.coalDeposited}`);
+    this.socket.emit('furnace:deposit');
   }
 
   escape() {
-    console.log('[Game] Player escaped!');
-    if (this.isOnline && this.socket) {
-      this.socket.emit('player:escape');
-    }
-    alert('🎉 YOU ESCAPED FROM COBB! Level Complete.');
+    this.socket.emit('player:escape');
   }
 
   updateCobbAI(delta) {
@@ -503,7 +509,9 @@ class GameScene extends Phaser.Scene {
     subText.textContent = subtitle || '';
     banner.classList.remove('hidden');
 
-    setTimeout(() => {
+    // A newer banner must not be hidden by an older one's timer
+    clearTimeout(banner.hideTimer);
+    banner.hideTimer = setTimeout(() => {
       banner.classList.add('hidden');
     }, 4500);
   }
@@ -532,38 +540,114 @@ class GameScene extends Phaser.Scene {
   }
 
   setupNetworkHandlers() {
-    this.socket.on('player:moved', (data) => {
-      let remote = this.remotePlayers.get(data.id);
-      if (!remote) {
-        remote = this.physics.add.sprite(data.x, data.y, 'player_sprite');
-        remote.setDepth(10);
-        this.remotePlayers.set(data.id, remote);
-      }
-      remote.setPosition(data.x, data.y);
-    });
+    const handlers = {
+      'player:moved': (data) => {
+        const remote = this.remotePlayers.get(data.id);
+        if (!remote) return;
+        remote.targetX = data.x;
+        remote.targetY = data.y;
+        remote.setFlipX(data.flipX);
+      },
 
-    this.socket.on('player:left', (data) => {
-      const remote = this.remotePlayers.get(data.id);
-      if (remote) {
-        remote.destroy();
-        this.remotePlayers.delete(data.id);
-      }
-    });
+      // Server rejected a move (too fast or out of bounds)
+      'player:correct': (data) => {
+        this.player.setPosition(data.x, data.y);
+      },
 
-    this.socket.on('coal:updated', (data) => {
-      const sprite = this.coalMap.get(data.coalId);
-      if (sprite) {
+      'player:left': (data) => {
+        this.removeRemotePlayer(data.id);
+      },
+
+      'player:escaped': (data) => {
+        if (data.id === this.myId) {
+          this.markEscaped();
+        } else {
+          this.removeRemotePlayer(data.id);
+        }
+      },
+
+      'coal:updated': (data) => {
+        const sprite = this.coalMap.get(data.coalId);
+        if (sprite) {
+          sprite.destroy();
+          this.coalMap.delete(data.coalId);
+        }
+        if (data.collectedBy === this.myId) {
+          this.player.hasCoal = true;
+          this.cameras.main.flash(150, 255, 170, 34);
+          this.updateHUD();
+        }
+      },
+
+      'furnace:updated': (data) => {
+        this.mapData.furnace.coalDeposited = data.coalDeposited;
+        this.mapData.exit.unlocked = data.exitUnlocked;
+        if (this.exitBeacon && data.exitUnlocked) this.exitBeacon.fillColor = 0x38ef7d;
+        if (data.depositedBy === this.myId) {
+          this.player.hasCoal = false;
+          if (data.exitUnlocked) {
+            this.cameras.main.flash(500, 56, 239, 125);
+          } else {
+            this.cameras.main.flash(200, 255, 100, 0);
+          }
+        }
+        this.updateHUD();
+      }
+    };
+
+    // Listeners live on the shared socket, so drop them when this game is torn down
+    Object.entries(handlers).forEach(([event, fn]) => this.socket.on(event, fn));
+    const detach = () => Object.entries(handlers).forEach(([event, fn]) => this.socket.off(event, fn));
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, detach);
+    this.events.once(Phaser.Scenes.Events.DESTROY, detach);
+  }
+
+  markEscaped() {
+    if (this.escaped) return;
+    this.escaped = true;
+    this.player.setVelocity(0, 0);
+    this.player.setVisible(false);
+    this.player.body.enable = false;
+    this.lanternGlow.setVisible(false);
+    this.showRuleBanner('YOU ESCAPED', 'Waiting for the others to get out...');
+  }
+
+  // Bring the scene in line with the server's current round state
+  applySnapshot(room) {
+    room.mapData.coal.forEach((c) => {
+      const sprite = this.coalMap.get(c.id);
+      if (c.collected && sprite) {
         sprite.destroy();
-        this.coalMap.delete(data.coalId);
+        this.coalMap.delete(c.id);
       }
     });
 
-    this.socket.on('furnace:updated', (data) => {
-      this.mapData.furnace.coalDeposited = data.coalDeposited;
-      this.mapData.exit.unlocked = data.exitUnlocked;
-      if (this.exitBeacon && data.exitUnlocked) this.exitBeacon.fillColor = 0x38ef7d;
-      this.updateHUD();
+    this.mapData.furnace.coalDeposited = room.mapData.furnace.coalDeposited;
+    this.mapData.exit.unlocked = room.mapData.exit.unlocked;
+    if (this.mapData.exit.unlocked) this.exitBeacon.fillColor = 0x38ef7d;
+
+    room.players.forEach((p) => {
+      if (p.id === this.myId) {
+        this.player.hasCoal = p.hasCoal;
+        if (p.isEscaped) this.markEscaped();
+        return;
+      }
+      if (p.isEscaped) {
+        this.removeRemotePlayer(p.id);
+        return;
+      }
+      const remote = this.remotePlayers.get(p.id);
+      if (remote) {
+        remote.targetX = p.x;
+        remote.targetY = p.y;
+      }
     });
+    // Players who left while we were loading
+    this.remotePlayers.forEach((remote, id) => {
+      if (!room.players.some(p => p.id === id)) this.removeRemotePlayer(id);
+    });
+
+    this.updateHUD();
   }
 
   // Facility Radar Minimap System
@@ -654,12 +738,12 @@ class GameScene extends Phaser.Scene {
     ctx.arc(px, py, 3 + pulse, 0, Math.PI * 2);
     ctx.stroke();
 
-    // 7. Draw Remote Players in Multiplayer
+    // 7. Draw Remote Players in their own colours
     this.remotePlayers.forEach((remote) => {
       if (remote.active) {
         const rx = (remote.x / 32) * scale;
         const ry = (remote.y / 32) * scale;
-        ctx.fillStyle = '#ff63b1';
+        ctx.fillStyle = remote.colorHex;
         ctx.beginPath();
         ctx.arc(rx, ry, 2.5, 0, Math.PI * 2);
         ctx.fill();
