@@ -4,6 +4,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const socket = io();
   window.gameSocket = socket;
 
+  // Browsers only start audio after the player interacts with the page
+  document.addEventListener('pointerdown', () => window.Sound.unlock());
+  document.addEventListener('keydown', () => window.Sound.unlock());
+
   // 2. DOM Elements
   const uiOverlay = document.getElementById('ui-overlay');
   const viewInitial = document.getElementById('view-initial');
@@ -46,15 +50,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // A secret this browser keeps so it can reclaim its seat after a dropped connection
   const playerId = (() => {
+    // randomUUID only exists on https and localhost; LAN play over plain http needs the fallback
+    const fresh = () => (crypto.randomUUID
+      ? crypto.randomUUID()
+      : Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join(''));
     try {
       let id = localStorage.getItem('cobbPlayerId');
       if (!id) {
-        id = crypto.randomUUID();
+        id = fresh();
         localStorage.setItem('cobbPlayerId', id);
       }
       return id;
     } catch (e) {
-      return crypto.randomUUID(); // storage blocked: still unique for this page
+      return fresh(); // storage blocked: still unique for this page
     }
   })();
 
@@ -86,6 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
         pixelArt: true,
         maxLights: CONSTANTS.LIGHTS.MAX_LIGHTS
       },
+      input: { gamepad: true },
       physics: {
         default: 'arcade',
         arcade: {

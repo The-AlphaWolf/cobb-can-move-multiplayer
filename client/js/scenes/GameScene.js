@@ -86,8 +86,13 @@ class GameScene extends Phaser.Scene {
       shift: Phaser.Input.Keyboard.KeyCodes.SHIFT,
       map: Phaser.Input.Keyboard.KeyCodes.M,
       lantern: Phaser.Input.Keyboard.KeyCodes.F,
-      throw: Phaser.Input.Keyboard.KeyCodes.R
+      throw: Phaser.Input.Keyboard.KeyCodes.R,
+      mute: Phaser.Input.Keyboard.KeyCodes.N
     });
+    this.pad = { x: 0, y: 0, sprint: false, a: false };
+    this.padPrev = {};
+    this.stepTimer = 0;
+    this.beatTimer = 0;
     // Click throws a rock at the pointer
     this.input.on('pointerdown', (pointer) => {
       if (this.status === 'active') this.throwRock(pointer.worldX, pointer.worldY);
@@ -324,17 +329,22 @@ class GameScene extends Phaser.Scene {
     if (!this.player || !this.player.body) return;
 
     const active = this.status === 'active';
+    this.readPad();
     this.handleMapToggle();
+    if (Phaser.Input.Keyboard.JustDown(this.wasd.mute)) {
+      const muted = window.Sound.toggleMute();
+      this.showRuleBanner(muted ? 'SOUND OFF' : 'SOUND ON', 'Press N to toggle sound.');
+    }
     if (this.isCobb) {
       this.handleCobbMovement();
     } else if (active && this.time.now < this.stunnedUntil) {
       this.player.setVelocity(0, 0); // RACE: dazed by a rival's rock
     } else if (active) {
-      if (Phaser.Input.Keyboard.JustDown(this.wasd.lantern)) {
+      if (Phaser.Input.Keyboard.JustDown(this.wasd.lantern) || this.pad.yDown) {
         this.lanternDim = !this.lanternDim;
         this.updateHUD();
       }
-      if (Phaser.Input.Keyboard.JustDown(this.wasd.throw)) {
+      if (Phaser.Input.Keyboard.JustDown(this.wasd.throw) || this.pad.bDown) {
         const dir = this.player.flipX ? -1 : 1;
         this.throwRock(this.player.x + dir * 200, this.player.y);
       }
@@ -349,6 +359,8 @@ class GameScene extends Phaser.Scene {
     this.updateLights();
     this.updateMinimap(delta);
     this.updateWarnings();
+    this.updateAudio(delta);
+    this.animateWalkers(time);
 
     // Network Sync (20 ticks/sec)
     this.networkSendTimer -= delta;
@@ -439,7 +451,7 @@ class GameScene extends Phaser.Scene {
         this.reviveTarget = remote;
       }
     });
-    this.setReviving(!!this.reviveTarget && (this.wasd.interact.isDown || this.wasd.space.isDown));
+    this.setReviving(!!this.reviveTarget && (this.wasd.interact.isDown || this.wasd.space.isDown || this.pad.a));
   }
 
   setReviving(active) {
@@ -505,11 +517,84 @@ class GameScene extends Phaser.Scene {
   }
 
   handleMapToggle() {
-    if (!Phaser.Input.Keyboard.JustDown(this.wasd.map)) return;
+    if (!Phaser.Input.Keyboard.JustDown(this.wasd.map) && !this.pad.backDown) return;
     const minimapBox = document.getElementById('minimap-box');
     const btnToggle = document.getElementById('btn-toggle-map');
     minimapBox.classList.toggle('expanded');
     btnToggle.textContent = minimapBox.classList.contains('expanded') ? '[M] CLOSE' : '[M] FULL';
+  }
+
+  // First connected gamepad: left stick moves, RT/LB sprints, A interacts and revives,
+  // B throws, Y shutters the lantern, Back opens the map. Button presses are edge-detected.
+  readPad() {
+    const gp = this.input.gamepad && this.input.gamepad.total ? this.input.gamepad.getPad(0) : null;
+    const now = gp ? {
+      x: Math.abs(gp.leftStick.x) > 0.25 ? gp.leftStick.x : 0,
+      y: Math.abs(gp.leftStick.y) > 0.25 ? gp.leftStick.y : 0,
+      sprint: gp.R2 > 0.5 || gp.L1 > 0.5,
+      a: gp.A,
+      b: gp.B,
+      yb: gp.Y,
+      back: !!(gp.buttons[8] && gp.buttons[8].pressed)
+    } : { x: 0, y: 0, sprint: false, a: false, b: false, yb: false, back: false };
+    const prev = this.padPrev;
+    this.pad = {
+      ...now,
+      aDown: now.a && !prev.a,
+      bDown: now.b && !prev.b,
+      yDown: now.yb && !prev.yb,
+      backDown: now.back && !prev.back
+    };
+    this.padPrev = now;
+  }
+
+  // Footsteps, heartbeat and Cobb's breathing get louder as Cobb gets closer; the fire roars nearby
+  updateAudio(delta) {
+    const S = window.Sound;
+    const me = this.player;
+    let nearest = Infinity;
+    this.cobbs.forEach((c) => {
+      nearest = Math.min(nearest, Phaser.Math.Distance.Between(me.x, me.y, c.x, c.y));
+    });
+    const hunted = !this.isCobb && (this.status === 'active' || this.status === 'downed');
+    const danger = hunted ? Math.max(0, 1 - nearest / 320) : 0;
+    S.setBreath(hunted ? Math.max(0, 1 - nearest / 380) : 0);
+
+    const f = this.mapData.furnace;
+    const toFire = Phaser.Math.Distance.Between(me.x, me.y, f.x, f.y);
+    S.setFire(Math.max(0, 1 - toFire / 420) * (f.fuel > 0 ? 1 : 0.2));
+
+    this.beatTimer -= delta;
+    if (danger > 0 && this.beatTimer <= 0) {
+      S.heartbeat(danger);
+      this.beatTimer = 900 - 550 * danger; // the closer it is, the faster your heart
+    }
+
+    this.stepTimer -= delta;
+    const moving = me.body.velocity.lengthSq() > 100;
+    if (moving && this.status === 'active' && this.stepTimer <= 0) {
+      S.footstep(me.isSprinting, this.isCobb ? 0.6 : 1);
+      this.stepTimer = me.isSprinting ? 220 : 330;
+    }
+  }
+
+  // Volume for a sound at a world point, fading out by `range` px
+  volumeAt(x, y, range = 500) {
+    return Math.max(0, 1 - Phaser.Math.Distance.Between(this.player.x, this.player.y, x, y) / range);
+  }
+
+  // Cheap walk cycle: a waddle while moving; Cobb lurches slower and wider
+  animateWalkers(time) {
+    const wobble = (sprite, moving, speed, size) => sprite.setAngle(moving ? Math.sin(time / speed) * size : 0);
+    if (this.status === 'active') {
+      wobble(this.player, this.player.body.velocity.lengthSq() > 100, this.isCobb ? 140 : 70, this.isCobb ? 7 : 5);
+    }
+    this.remotePlayers.forEach((r) => {
+      if (r.state === 'active') wobble(r, Math.abs(r.targetX - r.x) + Math.abs(r.targetY - r.y) > 1, 70, 5);
+    });
+    this.cobbs.forEach((c) => {
+      wobble(c, Math.abs(c.targetX - c.x) + Math.abs(c.targetY - c.y) > 1, 140, 7);
+    });
   }
 
   // VERSUS: steer Cobb. No sprint, no items; the fire's light pushes you back out.
@@ -520,6 +605,10 @@ class GameScene extends Phaser.Scene {
     if (this.cursors.right.isDown || this.wasd.right.isDown) moveX += 1;
     if (this.cursors.up.isDown || this.wasd.up.isDown) moveY -= 1;
     if (this.cursors.down.isDown || this.wasd.down.isDown) moveY += 1;
+    if (!moveX && !moveY) {
+      moveX = this.pad.x;
+      moveY = this.pad.y;
+    }
     if (moveX < 0) this.player.setFlipX(true);
     else if (moveX > 0) this.player.setFlipX(false);
     if (this.cobbHeld) moveX = moveY = 0;
@@ -568,13 +657,20 @@ class GameScene extends Phaser.Scene {
     if (this.cursors.right.isDown || this.wasd.right.isDown) moveX += 1;
     if (this.cursors.up.isDown || this.wasd.up.isDown) moveY -= 1;
     if (this.cursors.down.isDown || this.wasd.down.isDown) moveY += 1;
+    // Gamepad stick when the keyboard is idle (analog: a light push walks slower)
+    let analog = 1;
+    if (!moveX && !moveY && (this.pad.x || this.pad.y)) {
+      moveX = this.pad.x;
+      moveY = this.pad.y;
+      analog = Math.min(1, Math.hypot(moveX, moveY));
+    }
 
     // Flip sprite facing direction
     if (moveX < 0) this.player.setFlipX(true);
     else if (moveX > 0) this.player.setFlipX(false);
 
     // Sprinting check
-    const wantsSprint = this.wasd.shift.isDown && (moveX !== 0 || moveY !== 0);
+    const wantsSprint = (this.wasd.shift.isDown || this.pad.sprint) && (moveX !== 0 || moveY !== 0);
 
     if (wantsSprint && this.player.stamina > 5) {
       this.player.isSprinting = true;
@@ -593,7 +689,7 @@ class GameScene extends Phaser.Scene {
 
     // Reviving means standing still
     if (this.reviving) moveX = moveY = 0;
-    const velocity = new Phaser.Math.Vector2(moveX, moveY).normalize().scale(currentSpeed);
+    const velocity = new Phaser.Math.Vector2(moveX, moveY).normalize().scale(currentSpeed * analog);
     this.player.setVelocity(velocity.x, velocity.y);
 
     // Update Stamina Bar in HUD
@@ -607,7 +703,7 @@ class GameScene extends Phaser.Scene {
 
   handleInteractions() {
     const justPressedInteract = Phaser.Input.Keyboard.JustDown(this.wasd.interact) ||
-                                Phaser.Input.Keyboard.JustDown(this.wasd.space);
+                                Phaser.Input.Keyboard.JustDown(this.wasd.space) || this.pad.aDown;
 
     if (!justPressedInteract) return;
 
@@ -805,10 +901,22 @@ class GameScene extends Phaser.Scene {
         });
       },
 
-      'player:escaped': (data) => this.applyPlayerState(data.id, 'escaped'),
-      'player:downed': (data) => this.applyPlayerState(data.id, 'downed'),
-      'player:revived': (data) => this.applyPlayerState(data.id, 'active'),
-      'player:died': (data) => this.applyPlayerState(data.id, 'dead'),
+      'player:escaped': (data) => {
+        if (data.id === this.myId) window.Sound.escape();
+        this.applyPlayerState(data.id, 'escaped');
+      },
+      'player:downed': (data) => {
+        if (data.id === this.myId) window.Sound.grab();
+        this.applyPlayerState(data.id, 'downed');
+      },
+      'player:revived': (data) => {
+        if (data.id === this.myId || data.by === this.myId) window.Sound.revive();
+        this.applyPlayerState(data.id, 'active');
+      },
+      'player:died': (data) => {
+        if (data.id === this.myId) window.Sound.death();
+        this.applyPlayerState(data.id, 'dead');
+      },
 
       // Coal a downed or departed player was carrying, back on the floor
       'coal:dropped': (data) => {
@@ -817,7 +925,11 @@ class GameScene extends Phaser.Scene {
         this.updateHUD();
       },
 
-      'breaker:updated': (data) => this.setBreaker(data.breakerId, data.active),
+      'breaker:updated': (data) => {
+        this.setBreaker(data.breakerId, data.active);
+        const b = this.mapData.breakers.find(br => br.id === data.breakerId);
+        window.Sound.breaker(this.volumeAt(b.x, b.y, 700));
+      },
 
       'rock:taken': (data) => {
         this.removeRock(data.rockId);
@@ -835,7 +947,12 @@ class GameScene extends Phaser.Scene {
         }
         const sprite = this.addRock({ id: data.rock.id, x: data.from.x, y: data.from.y });
         this.tweens.add({ targets: sprite, x: data.rock.x, y: data.rock.y, duration: 220, ease: 'Quad.easeOut' });
-        if (data.hitCobb) this.cameras.main.flash(120, 200, 220, 255);
+        if (data.by === this.myId) window.Sound.rockThrow();
+        this.time.delayedCall(220, () => window.Sound.rockLand(this.volumeAt(data.rock.x, data.rock.y)));
+        if (data.hitCobb) {
+          this.cameras.main.flash(120, 200, 220, 255);
+          window.Sound.stun();
+        }
       },
 
       'carrot:updated': (data) => {
@@ -907,6 +1024,7 @@ class GameScene extends Phaser.Scene {
           this.coalMap.delete(data.coalId);
         }
         if (data.collectedBy === this.myId) {
+          window.Sound.coal();
           this.player.hasCoal = true;
           this.coalSince = Date.now();
           this.cameras.main.flash(150, 255, 170, 34);
@@ -922,6 +1040,7 @@ class GameScene extends Phaser.Scene {
         const open = this.isRace ? (this.me.deposited || 0) >= this.mapData.furnace.coalRequired : data.exitUnlocked;
         this.setExitUnlocked(open);
         if (data.depositedBy === this.myId) {
+          window.Sound.deposit();
           this.player.hasCoal = false;
           if (open) {
             this.cameras.main.flash(500, 56, 239, 125);

@@ -5,7 +5,6 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node server/index.js",
     "test": "node test/game.js && node test/rules.js && node test/modes.js && node test/map.js && node test/smoke.js"
   },
   "dependencies": {
@@ -14,5 +13,8 @@
   },
   "devDependencies": {
     "socket.io-client": "^4.8.1"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
