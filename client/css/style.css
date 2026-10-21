@@ -664,3 +664,14 @@ input[type="text"]:focus, select:focus {
 select:disabled {
   opacity: 0.6;
 }
+
+.results-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--accent-amber);
+  margin-bottom: 16px;
+}
+
+.results-tip:empty {
+  display: none;
+}

@@ -1,5 +1,6 @@
-const MapGenerator = require('./MapGenerator');
-const CONSTANTS = require('./constants');
+const MapGenerator = require('../shared/MapGenerator');
+const CONSTANTS = require('../shared/constants');
+const { buildWalkGrid, createCobbs } = require('./cobb');
 
 // Modes players can pick; add 'versus' and 'race' here once they are built
 const MODES = ['coop'];
@@ -64,13 +65,9 @@ class RoomManager {
       role: 'SURVIVOR', // SURVIVOR, COBB (for versus)
       x: 0,
       y: 0,
-      flipX: false,
-      lastMoveAt: 0,
-      isSprinting: false,
-      hasCoal: false,
-      isDowned: false,
-      isEscaped: false
+      flipX: false
     };
+    this.resetRoundState(player);
     this.placeAtSpawn(room, player, playerIndex);
 
     room.players.set(socketId, player);
@@ -83,27 +80,41 @@ class RoomManager {
     player.y = spawn.y;
   }
 
-  // Fresh map and player state for a new round
+  resetRoundState(p) {
+    p.role = 'SURVIVOR';
+    p.lastMoveAt = 0;
+    p.isSprinting = false;
+    p.hasCoal = false;
+    p.coalId = null;
+    p.isEscaped = false;
+    p.isDowned = false;
+    p.isDead = false;
+    p.bleedLeft = 0;       // ms until a downed player dies
+    p.reviveProgress = 0;  // ms a teammate has spent reviving them
+    p.reviving = false;    // holding E over a downed teammate
+    p.safeUntil = 0;       // Cobb can't grab before this time
+  }
+
+  // Fresh map, Cobb and player state for a new round
   startRound(room) {
+    const now = Date.now();
     room.mapData = this.generateMap();
+    room.walk = buildWalkGrid(room.mapData);
+    room.cobbs = createCobbs(room.mapData, now);
     room.state = 'PLAYING';
-    room.stats.startTime = Date.now();
+    room.stats.startTime = now;
 
     let index = 0;
     room.players.forEach((p) => {
+      this.resetRoundState(p);
       this.placeAtSpawn(room, p, index++);
-      p.hasCoal = false;
-      p.isDowned = false;
-      p.isEscaped = false;
-      p.isSprinting = false;
-      p.lastMoveAt = 0;
-      p.role = 'SURVIVOR';
     });
   }
 
-  endRound(room) {
+  // Players stay ready between rounds so the host can retry straight away
+  endRound(room, won) {
     room.state = 'LOBBY';
-    room.players.forEach((p) => { p.ready = false; });
+    if (won) room.level += 1;
   }
 
   removePlayer(socketId) {

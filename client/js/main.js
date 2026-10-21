@@ -35,6 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const resultsTitle = document.getElementById('results-title');
   const resultsTime = document.getElementById('results-time');
   const resultsList = document.getElementById('results-list');
+  const resultsTip = document.getElementById('results-tip');
   const btnResultsContinue = document.getElementById('btn-results-continue');
 
   let currentRoom = null;
@@ -226,11 +227,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function showResults({ won, durationMs, players }) {
-    resultsTitle.textContent = won ? 'ESCAPED' : 'LOST TO COBB';
+  function showResults({ won, level, tip, durationMs, players }) {
+    resultsTitle.textContent = won ? `LEVEL ${level} CLEARED` : `CAUGHT ON LEVEL ${level}`;
     resultsTitle.className = `results-title ${won ? 'won' : 'lost'}`;
     const secs = Math.round(durationMs / 1000);
     resultsTime.textContent = `ROUND TIME ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    resultsTip.textContent = tip ? `TIP: ${tip}` : '';
+    btnResultsContinue.textContent = won ? 'BACK TO LOBBY' : 'BACK TO LOBBY TO RETRY';
 
     resultsList.innerHTML = '';
     players.forEach(p => {
@@ -242,8 +245,8 @@ document.addEventListener('DOMContentLoaded', () => {
       nameSpan.textContent = p.name;
 
       const statusSpan = document.createElement('span');
-      statusSpan.className = `player-status-tag ${p.escaped ? 'ready' : ''}`;
-      statusSpan.textContent = p.escaped ? 'ESCAPED' : (p.downed ? 'CAUGHT' : 'TRAPPED');
+      statusSpan.className = `player-status-tag ${p.status === 'escaped' ? 'ready' : ''}`;
+      statusSpan.textContent = p.status === 'escaped' ? 'ESCAPED' : 'CAUGHT';
 
       card.appendChild(nameSpan);
       card.appendChild(statusSpan);
@@ -269,7 +272,6 @@ document.addEventListener('DOMContentLoaded', () => {
     stopPhaser();
     gameHud.classList.add('hidden');
     uiOverlay.classList.remove('hidden');
-    setReady(false);
     updateLobbyUI(room);
     showResults(results);
   });

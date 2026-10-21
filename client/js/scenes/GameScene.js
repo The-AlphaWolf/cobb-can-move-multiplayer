@@ -1,3 +1,6 @@
+const DOWNED_TINT = 0x995555;
+const DEAD_TINT = 0x333333;
+
 class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene');
@@ -9,7 +12,9 @@ class GameScene extends Phaser.Scene {
     this.myId = this.socket.id;
     this.me = this.roomData.players.find(p => p.id === this.myId);
     this.networkSendTimer = 0;
-    this.escaped = false;
+    this.status = 'active'; // active, downed, dead, escaped
+    this.reviving = false;
+    this.spectating = null;
   }
 
   create() {
@@ -38,8 +43,9 @@ class GameScene extends Phaser.Scene {
     // 6. Spawn Local Player
     this.createPlayer();
 
-    // 7. Spawn Cobb Monster
-    this.createCobb();
+    // 7. Cobb is simulated on the server; we only draw it
+    this.cobbs = new Map();
+    this.roomData.cobbs.forEach(c => this.addCobb(c));
 
     // 8. Remote Players, placed at their server-assigned spawns
     this.remotePlayers = new Map();
@@ -67,7 +73,6 @@ class GameScene extends Phaser.Scene {
       shift: Phaser.Input.Keyboard.KeyCodes.SHIFT,
       map: Phaser.Input.Keyboard.KeyCodes.M
     });
-    this.keyM = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
 
     // 12. Setup Network Listeners, then catch up on anything missed while booting
     this.setupNetworkHandlers();
@@ -122,13 +127,7 @@ class GameScene extends Phaser.Scene {
     this.coalGroup = this.physics.add.staticGroup();
     this.coalMap = new Map();
 
-    this.mapData.coal.forEach(c => {
-      if (!c.collected) {
-        const sprite = this.coalGroup.create(c.x, c.y, 'coal_sprite');
-        sprite.coalId = c.id;
-        this.coalMap.set(c.id, sprite);
-      }
-    });
+    this.mapData.coal.forEach(c => this.placeCoal(c));
 
     this.breakerGroup = this.physics.add.staticGroup();
     if (this.mapData.breakers) {
@@ -156,24 +155,23 @@ class GameScene extends Phaser.Scene {
     this.physics.add.collider(this.player, this.furnaceSprite);
   }
 
-  createCobb() {
-    const spawn = this.mapData.cobbSpawn || { x: 300, y: 200 };
-    this.cobb = this.physics.add.sprite(spawn.x, spawn.y, 'cobb_sprite');
-    this.cobb.setCollideWorldBounds(true);
-    this.cobb.body.setSize(18, 22);
-    this.cobb.body.setOffset(7, 9);
-    this.cobb.setDepth(11); // Render on top
+  addCobb(c) {
+    const sprite = this.add.sprite(c.x, c.y, 'cobb_sprite');
+    sprite.setDepth(11); // Render on top
+    sprite.setFlipX(c.flipX);
+    sprite.targetX = c.x;
+    sprite.targetY = c.y;
+    this.cobbs.set(c.id, sprite);
+    return sprite;
+  }
 
-    this.cobbSpeed = 55; // Gentle, slow, creepy patrol
-    // Start target in distant outer room (Room 1 or 5), FAR from furnace!
-    const outerRoom = (this.mapData.rooms && this.mapData.rooms[1]) || { centerX: 8, centerY: 7 };
-    this.cobbTargetPos = { x: outerRoom.centerX * 32 + 16, y: outerRoom.centerY * 32 + 16 };
-    this.cobbWaypointTimer = 8000; // Stay in outer rooms for at least 8 seconds!
-    this.cobbState = 'WANDER';
-    this.cobbChaseTimer = 0;
-    this.cobbStunTimer = 0;
-    this.cobbPauseTimer = 0;
-    this.playerInvincibleTimer = 0;
+  // Tighter smoothing than for players: a Cobb drawn behind its real position makes grabs look unfair
+  updateCobbs(delta) {
+    const t = Math.min(1, delta / 40);
+    this.cobbs.forEach((sprite) => {
+      sprite.x += (sprite.targetX - sprite.x) * t;
+      sprite.y += (sprite.targetY - sprite.y) * t;
+    });
   }
 
   // 9. Crisp Horror Darkness & Fog-of-War System
@@ -228,18 +226,23 @@ class GameScene extends Phaser.Scene {
   update(time, delta) {
     if (!this.player || !this.player.body) return;
 
-    if (!this.escaped) {
+    const active = this.status === 'active';
+    this.handleMapToggle();
+    if (active) {
+      this.updateReviving();
       this.handlePlayerMovement(delta);
       this.handleInteractions();
-      this.updateCobbAI(delta);
+    } else {
+      this.player.setVelocity(0, 0);
     }
     this.updateRemotePlayers(delta);
+    this.updateCobbs(delta);
     this.updateDarkness();
     this.updateMinimap(delta);
 
     // Network Sync (20 ticks/sec)
     this.networkSendTimer -= delta;
-    if (!this.escaped && this.networkSendTimer <= 0) {
+    if (active && this.networkSendTimer <= 0) {
       this.networkSendTimer = 50;
       this.socket.emit('player:move', {
         x: Math.round(this.player.x),
@@ -257,6 +260,11 @@ class GameScene extends Phaser.Scene {
     remote.setFlipX(!!p.flipX);
     remote.targetX = p.x;
     remote.targetY = p.y;
+    remote.name = p.name;
+    remote.color = p.color;
+    remote.state = 'active';
+    remote.bleedLeft = 0;
+    remote.progress = 0;
     remote.colorHex = `#${p.color.toString(16).padStart(6, '0')}`;
     remote.label = this.add.text(p.x, p.y - 14, p.name, {
       fontFamily: 'Share Tech Mono, monospace',
@@ -273,16 +281,112 @@ class GameScene extends Phaser.Scene {
     remote.label.destroy();
     remote.destroy();
     this.remotePlayers.delete(id);
+    if (this.spectating === remote) this.spectate();
   }
 
-  // Ease remote players toward their latest reported position
+  // Ease remote players toward their latest reported position, and keep labels current
   updateRemotePlayers(delta) {
     const t = Math.min(1, delta / 80);
     this.remotePlayers.forEach((remote) => {
       remote.x += (remote.targetX - remote.x) * t;
       remote.y += (remote.targetY - remote.y) * t;
       remote.label.setPosition(remote.x, remote.y - 14);
+
+      let text = remote.name;
+      if (remote.state === 'dead') {
+        text += ' · DEAD';
+      } else if (remote.state === 'downed') {
+        text += remote.progress > 0
+          ? ` · REVIVING ${Math.round(remote.progress * 100)}%`
+          : ` · DOWN ${Math.ceil(remote.bleedLeft / 1000)}s`;
+        if (this.reviveTarget === remote && !this.reviving) text += ' · HOLD E';
+      }
+      if (remote.label.text !== text) remote.label.setText(text);
     });
+  }
+
+  // Hold E next to a downed teammate to revive them; the server checks range and timing
+  updateReviving() {
+    const radius = window.CONSTANTS.PLAYER.REVIVE_RADIUS;
+    this.reviveTarget = null;
+    this.remotePlayers.forEach((remote) => {
+      if (remote.state === 'downed' &&
+          Phaser.Math.Distance.Between(this.player.x, this.player.y, remote.x, remote.y) <= radius) {
+        this.reviveTarget = remote;
+      }
+    });
+    this.setReviving(!!this.reviveTarget && (this.wasd.interact.isDown || this.wasd.space.isDown));
+  }
+
+  setReviving(active) {
+    if (active === this.reviving) return;
+    this.reviving = active;
+    this.socket.emit('player:reviving', { active });
+  }
+
+  // Camera follows a teammate who is still in the round
+  spectate() {
+    const remotes = Array.from(this.remotePlayers.values());
+    this.spectating = remotes.find(r => r.state === 'active') || remotes.find(r => r.state === 'downed') || null;
+    if (this.spectating) this.cameras.main.startFollow(this.spectating, true, 0.1, 0.1);
+  }
+
+  // Apply a player's new state (active, downed, dead, escaped) to whoever it belongs to
+  applyPlayerState(id, state) {
+    if (id === this.myId) {
+      this.setMyState(state);
+      return;
+    }
+    const remote = this.remotePlayers.get(id);
+    if (!remote || remote.state === state) return;
+    if (state === 'escaped') {
+      this.removeRemotePlayer(id);
+      return;
+    }
+    remote.state = state;
+    remote.progress = 0;
+    remote.setAngle(state === 'active' ? 0 : 90);
+    remote.setTint(state === 'active' ? remote.color : (state === 'downed' ? DOWNED_TINT : DEAD_TINT));
+    if (this.spectating === remote && state === 'dead') this.spectate();
+  }
+
+  setMyState(state) {
+    if (this.status === state) return;
+    this.status = state;
+    this.setReviving(false);
+    this.player.setVelocity(0, 0);
+
+    if (state === 'active') {
+      this.player.setAngle(0);
+      this.player.setTint(this.me.color);
+      this.cameras.main.flash(250, 255, 255, 255);
+      this.showRuleBanner('BACK ON YOUR FEET', 'Get moving. Cobb is still out there.');
+    } else if (state === 'downed') {
+      this.player.setAngle(90);
+      this.player.setTint(DOWNED_TINT);
+      this.player.hasCoal = false;
+      this.cameras.main.shake(300, 0.03);
+      this.cameras.main.flash(300, 160, 0, 0);
+    } else if (state === 'dead') {
+      this.player.setTint(DEAD_TINT);
+      this.showRuleBanner('YOU DIED', 'Spectating your team...');
+      this.spectate();
+    } else if (state === 'escaped') {
+      this.player.setVisible(false);
+      this.player.body.enable = false;
+      this.lanternGlow.setVisible(false);
+      this.showRuleBanner('YOU ESCAPED', 'Waiting for the others to get out...');
+      this.spectate();
+    }
+    this.updateHUD();
+  }
+
+  handleMapToggle() {
+    if (!Phaser.Input.Keyboard.JustDown(this.wasd.map)) return;
+    const minimapBox = document.getElementById('minimap-box');
+    const btnToggle = document.getElementById('btn-toggle-map');
+    minimapBox.classList.toggle('expanded');
+    btnToggle.textContent = minimapBox.classList.contains('expanded') ? '[M] CLOSE' : '[M] FULL';
   }
 
   handlePlayerMovement(delta) {
@@ -317,6 +421,8 @@ class GameScene extends Phaser.Scene {
       ? window.CONSTANTS.PLAYER.SPRINT_SPEED
       : window.CONSTANTS.PLAYER.BASE_SPEED;
 
+    // Reviving means standing still
+    if (this.reviving) moveX = moveY = 0;
     const velocity = new Phaser.Math.Vector2(moveX, moveY).normalize().scale(currentSpeed);
     this.player.setVelocity(velocity.x, velocity.y);
 
@@ -330,18 +436,6 @@ class GameScene extends Phaser.Scene {
   }
 
   handleInteractions() {
-    // Toggle Facility Minimap Radar
-    if (Phaser.Input.Keyboard.JustDown(this.wasd.map) || Phaser.Input.Keyboard.JustDown(this.keyM)) {
-      const minimapBox = document.getElementById('minimap-box');
-      const btnToggle = document.getElementById('btn-toggle-map');
-      if (minimapBox) {
-        minimapBox.classList.toggle('expanded');
-        if (btnToggle) {
-          btnToggle.textContent = minimapBox.classList.contains('expanded') ? '[M] CLOSE' : '[M] FULL';
-        }
-      }
-    }
-
     const justPressedInteract = Phaser.Input.Keyboard.JustDown(this.wasd.interact) ||
                                 Phaser.Input.Keyboard.JustDown(this.wasd.space);
 
@@ -391,112 +485,6 @@ class GameScene extends Phaser.Scene {
 
   escape() {
     this.socket.emit('player:escape');
-  }
-
-  updateCobbAI(delta) {
-    if (!this.cobb || !this.cobb.body) return;
-
-    // 1. Cobb Hit-Stun State (after attacking or when stunned)
-    if (this.cobbStunTimer > 0) {
-      this.cobbStunTimer -= delta;
-      this.cobb.setVelocity(0, 0);
-      this.cobb.setAlpha(0.6 + Math.sin(this.time.now / 100) * 0.4); // Stun flicker
-      return;
-    } else {
-      this.cobb.setAlpha(1.0);
-    }
-
-    // 2. Cobb Confused / Search Pause (after losing a chase)
-    if (this.cobbPauseTimer > 0) {
-      this.cobbPauseTimer -= delta;
-      this.cobb.setVelocity(0, 0);
-      return;
-    }
-
-    // Player Invincibility timer countdown & visual flash
-    if (this.playerInvincibleTimer > 0) {
-      this.playerInvincibleTimer -= delta;
-      this.player.setAlpha(Math.sin(this.time.now / 80) > 0 ? 0.4 : 1.0);
-    } else {
-      this.player.setAlpha(1.0);
-    }
-
-    const distToPlayer = Phaser.Math.Distance.Between(this.cobb.x, this.cobb.y, this.player.x, this.player.y);
-
-    // 3. Aggro Detection:
-    // On Level 1 ("Cobb can move"), Cobb is slow and mostly unalert.
-    // He only starts chasing if you literally bump into his direct proximity (< 60px).
-    if (distToPlayer < 65 && this.cobbState !== 'CHASE') {
-      this.cobbState = 'CHASE';
-      this.cobbChaseTimer = 2500; // 2.5s chase max!
-      this.cameras.main.shake(100, 0.01);
-    }
-
-    // 4. Chase Behavior
-    if (this.cobbState === 'CHASE') {
-      this.cobbChaseTimer -= delta;
-      this.cobbTargetPos = { x: this.player.x, y: this.player.y };
-      this.cobbSpeed = 85; // 85 px/s (Very easy to outrun! Player walk is 145, sprint is 230!)
-
-      // If player walks/sprints away (> 130px) or 2.5s expires, Cobb loses interest and pauses!
-      if (this.cobbChaseTimer <= 0 || distToPlayer > 130) {
-        this.cobbState = 'WANDER';
-        this.cobbPauseTimer = 2500; // Cobb stops and looks around confused for 2.5s!
-        // Pick an outer room to wander away to
-        const outerRoom = (this.mapData.rooms && this.mapData.rooms[1]) || { centerX: 5, centerY: 5 };
-        this.cobbTargetPos = { x: outerRoom.centerX * 32 + 16, y: outerRoom.centerY * 32 + 16 };
-        this.cobbWaypointTimer = 6000;
-      }
-    } else {
-      // 5. Normal Wandering Behavior (Slow, creepy patrol through outer corridors)
-      this.cobbSpeed = 50; // Slow 50 px/s
-      this.cobbWaypointTimer -= delta;
-      const distToTarget = Phaser.Math.Distance.Between(this.cobb.x, this.cobb.y, this.cobbTargetPos.x, this.cobbTargetPos.y);
-
-      if (this.cobbWaypointTimer <= 0 || distToTarget < 35) {
-        this.cobbWaypointTimer = Phaser.Math.Between(5000, 9000);
-        // Avoid always targeting the furnace room
-        const candidateRooms = this.mapData.rooms.filter(r => r.id !== 0);
-        const targetRoom = Phaser.Utils.Array.GetRandom(candidateRooms.length ? candidateRooms : this.mapData.rooms);
-        this.cobbTargetPos = {
-          x: targetRoom.centerX * 32 + 16,
-          y: targetRoom.centerY * 32 + 16
-        };
-      }
-    }
-
-    // Move smoothly towards current waypoint / target
-    const angle = Phaser.Math.Angle.Between(this.cobb.x, this.cobb.y, this.cobbTargetPos.x, this.cobbTargetPos.y);
-    const vx = Math.cos(angle) * this.cobbSpeed;
-    const vy = Math.sin(angle) * this.cobbSpeed;
-
-    this.cobb.setVelocity(vx, vy);
-
-    if (vx < -5) this.cobb.setFlipX(true);
-    else if (vx > 5) this.cobb.setFlipX(false);
-
-    // 6. Collision / Attack Check
-    if (distToPlayer < 24 && this.playerInvincibleTimer <= 0) {
-      this.cameras.main.shake(180, 0.025);
-
-      // Cobb is STUNNED after attacking for 3.5 seconds so player easily escapes!
-      this.cobbStunTimer = 3500;
-      this.cobbState = 'WANDER';
-      this.playerInvincibleTimer = 4000; // 4 seconds grace period!
-
-      // Cobb turns around and decides to walk to another room
-      const safeRoom = (this.mapData.rooms && this.mapData.rooms[3]) || { centerX: 10, centerY: 25 };
-      this.cobbTargetPos = { x: safeRoom.centerX * 32 + 16, y: safeRoom.centerY * 32 + 16 };
-      this.cobbWaypointTimer = 8000;
-
-      // Knock player back safely away from Cobb
-      const pushAngle = Phaser.Math.Angle.Between(this.cobb.x, this.cobb.y, this.player.x, this.player.y);
-      this.player.x += Math.cos(pushAngle) * 55;
-      this.player.y += Math.sin(pushAngle) * 55;
-
-      // Adrenaline burst for player: instant full stamina refill!
-      this.player.stamina = window.CONSTANTS.PLAYER.MAX_STAMINA;
-    }
   }
 
   showRuleBanner(ruleName, subtitle) {
@@ -558,12 +546,44 @@ class GameScene extends Phaser.Scene {
         this.removeRemotePlayer(data.id);
       },
 
-      'player:escaped': (data) => {
-        if (data.id === this.myId) {
-          this.markEscaped();
-        } else {
-          this.removeRemotePlayer(data.id);
-        }
+      'player:escaped': (data) => this.applyPlayerState(data.id, 'escaped'),
+      'player:downed': (data) => this.applyPlayerState(data.id, 'downed'),
+      'player:revived': (data) => this.applyPlayerState(data.id, 'active'),
+      'player:died': (data) => this.applyPlayerState(data.id, 'dead'),
+
+      // Coal a downed or departed player was carrying, back on the floor
+      'coal:dropped': (data) => {
+        this.placeCoal({ id: data.coalId, x: data.x, y: data.y, collected: false });
+        if (data.droppedBy === this.myId) this.player.hasCoal = false;
+        this.updateHUD();
+      },
+
+      'world:tick': (data) => {
+        data.cobbs.forEach((c) => {
+          const sprite = this.cobbs.get(c.id) || this.addCobb(c);
+          sprite.targetX = c.x;
+          sprite.targetY = c.y;
+          sprite.setFlipX(c.flipX);
+          // Jolt the camera the moment Cobb locks on to us
+          const chasingMe = c.state === 'CHASE' && c.targetId === this.myId;
+          if (chasingMe && !sprite.chasingMe) this.cameras.main.shake(150, 0.01);
+          sprite.chasingMe = chasingMe;
+        });
+
+        data.downed.forEach((d) => {
+          if (d.id === this.myId) {
+            const sub = d.progress > 0
+              ? `Being revived... ${Math.round(d.progress * 100)}%`
+              : `A teammate can hold E next to you to revive you. Bleeding out in ${Math.ceil(d.bleedLeft / 1000)}s.`;
+            this.showRuleBanner("YOU'RE DOWN", sub);
+            return;
+          }
+          const remote = this.remotePlayers.get(d.id);
+          if (remote) {
+            remote.bleedLeft = d.bleedLeft;
+            remote.progress = d.progress;
+          }
+        });
       },
 
       'coal:updated': (data) => {
@@ -602,40 +622,35 @@ class GameScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.DESTROY, detach);
   }
 
-  markEscaped() {
-    if (this.escaped) return;
-    this.escaped = true;
-    this.player.setVelocity(0, 0);
-    this.player.setVisible(false);
-    this.player.body.enable = false;
-    this.lanternGlow.setVisible(false);
-    this.showRuleBanner('YOU ESCAPED', 'Waiting for the others to get out...');
+  // Show a coal chunk where the server says it is, or remove it once collected
+  placeCoal(c) {
+    let sprite = this.coalMap.get(c.id);
+    if (c.collected) {
+      if (sprite) sprite.destroy();
+      this.coalMap.delete(c.id);
+      return;
+    }
+    if (!sprite) {
+      sprite = this.coalGroup.create(c.x, c.y, 'coal_sprite');
+      sprite.coalId = c.id;
+      this.coalMap.set(c.id, sprite);
+    }
+    sprite.setPosition(c.x, c.y);
+    sprite.refreshBody();
   }
 
   // Bring the scene in line with the server's current round state
   applySnapshot(room) {
-    room.mapData.coal.forEach((c) => {
-      const sprite = this.coalMap.get(c.id);
-      if (c.collected && sprite) {
-        sprite.destroy();
-        this.coalMap.delete(c.id);
-      }
-    });
+    room.mapData.coal.forEach(c => this.placeCoal(c));
 
     this.mapData.furnace.coalDeposited = room.mapData.furnace.coalDeposited;
     this.mapData.exit.unlocked = room.mapData.exit.unlocked;
     if (this.mapData.exit.unlocked) this.exitBeacon.fillColor = 0x38ef7d;
 
     room.players.forEach((p) => {
-      if (p.id === this.myId) {
-        this.player.hasCoal = p.hasCoal;
-        if (p.isEscaped) this.markEscaped();
-        return;
-      }
-      if (p.isEscaped) {
-        this.removeRemotePlayer(p.id);
-        return;
-      }
+      const state = p.isEscaped ? 'escaped' : p.isDead ? 'dead' : p.isDowned ? 'downed' : 'active';
+      if (p.id === this.myId) this.player.hasCoal = p.hasCoal;
+      this.applyPlayerState(p.id, state);
       const remote = this.remotePlayers.get(p.id);
       if (remote) {
         remote.targetX = p.x;
@@ -743,10 +758,17 @@ class GameScene extends Phaser.Scene {
       if (remote.active) {
         const rx = (remote.x / 32) * scale;
         const ry = (remote.y / 32) * scale;
-        ctx.fillStyle = remote.colorHex;
+        ctx.fillStyle = remote.state === 'dead' ? '#555555' : remote.colorHex;
         ctx.beginPath();
         ctx.arc(rx, ry, 2.5, 0, Math.PI * 2);
         ctx.fill();
+        // Blinking red ring so teammates can find someone who needs reviving
+        if (remote.state === 'downed' && Math.sin(this.time.now / 120) > 0) {
+          ctx.strokeStyle = '#ff3344';
+          ctx.beginPath();
+          ctx.arc(rx, ry, 5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
     });
   }

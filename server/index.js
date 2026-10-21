@@ -3,7 +3,9 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const RoomManager = require('./RoomManager');
-const CONSTANTS = require('./constants');
+const CONSTANTS = require('../shared/constants');
+const { isActive } = require('./cobb');
+const { tickRoom, snapshot, roundResult, dropCoal } = require('./game');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,9 +19,11 @@ const REACH_SLACK = 40;
 const CHAT_MAX_LENGTH = 100;
 const CHAT_MIN_INTERVAL = 400;
 const MOVE_MIN_INTERVAL = 30;
+const TICK_MS = 50; // 20 world updates a second
 
 // Serve static client files
 app.use(express.static(path.join(__dirname, '../client')));
+app.use('/shared', express.static(path.join(__dirname, '../shared')));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -138,15 +142,15 @@ io.on('connection', (socket) => {
   // Player Movement Sync (client owns its position, server caps the speed)
   on('player:move', ({ x, y, flipX, isSprinting }) => {
     const { room, player } = current(true);
-    if (!room || player.isEscaped || !isNum(x) || !isNum(y)) return;
+    if (!room || !isActive(player) || !isNum(x) || !isNum(y)) return;
 
     const ts = CONSTANTS.TILE_SIZE;
     const now = Date.now();
     // Client sends every 50 ms; anything much faster is flooding
     if (now - player.lastMoveAt < MOVE_MIN_INTERVAL) return;
     const dt = player.lastMoveAt ? Math.min(now - player.lastMoveAt, 1000) : 1000;
-    // Slack covers network jitter and Cobb's knockback shove
-    const maxStep = CONSTANTS.PLAYER.SPRINT_SPEED * (dt / 1000) * 1.5 + 80;
+    // Slack covers network jitter
+    const maxStep = CONSTANTS.PLAYER.SPRINT_SPEED * (dt / 1000) * 1.5 + 40;
     const inBounds = x >= 0 && y >= 0 && x <= room.mapData.width * ts && y <= room.mapData.height * ts;
 
     if (!inBounds || Math.hypot(x - player.x, y - player.y) > maxStep) {
@@ -172,24 +176,26 @@ io.on('connection', (socket) => {
   // Coal Picked Up
   on('coal:pickup', ({ coalId }) => {
     const { room, player } = current(true);
-    if (!room || player.hasCoal || player.isEscaped) return;
+    if (!room || player.hasCoal || !isActive(player)) return;
     const coal = room.mapData.coal.find(c => c.id === coalId);
     if (!coal || coal.collected) return;
     if (!near(player, coal, CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
 
     coal.collected = true;
     player.hasCoal = true;
+    player.coalId = coal.id;
     io.to(room.code).emit('coal:updated', { coalId, collectedBy: socket.id });
   });
 
   // Coal Deposited in Furnace
   on('furnace:deposit', () => {
     const { room, player } = current(true);
-    if (!room || !player.hasCoal) return;
+    if (!room || !player.hasCoal || !isActive(player)) return;
     const furnace = room.mapData.furnace;
     if (!near(player, furnace, CONSTANTS.PLAYER.INTERACTION_RADIUS + 25 + REACH_SLACK)) return;
 
     player.hasCoal = false;
+    player.coalId = null;
     furnace.coalDeposited += 1;
     if (furnace.coalDeposited >= furnace.coalRequired) {
       room.mapData.exit.unlocked = true;
@@ -206,7 +212,7 @@ io.on('connection', (socket) => {
   // Breaker Switch Flipped
   on('breaker:toggle', ({ breakerId }) => {
     const { room, player } = current(true);
-    if (!room) return;
+    if (!room || !isActive(player)) return;
     const breaker = room.mapData.breakers.find(b => b.id === breakerId);
     if (!breaker || !near(player, breaker, CONSTANTS.PLAYER.INTERACTION_RADIUS + REACH_SLACK)) return;
 
@@ -217,13 +223,18 @@ io.on('connection', (socket) => {
   // Player Escape
   on('player:escape', () => {
     const { room, player } = current(true);
-    if (!room || player.isEscaped || !room.mapData.exit.unlocked) return;
+    if (!room || !isActive(player) || !room.mapData.exit.unlocked) return;
     if (!near(player, room.mapData.exit, CONSTANTS.PLAYER.INTERACTION_RADIUS + 15 + REACH_SLACK)) return;
 
     player.isEscaped = true;
-    player.hasCoal = false;
     io.to(room.code).emit('player:escaped', { id: socket.id, name: player.name });
     checkRoundOver(room);
+  });
+
+  // Holding E over a downed teammate; the tick loop checks distance and does the reviving
+  on('player:reviving', ({ active }) => {
+    const { player } = current(true);
+    if (player) player.reviving = active === true && isActive(player);
   });
 
   // Chat message
@@ -245,6 +256,10 @@ io.on('connection', (socket) => {
   // Disconnect
   socket.on('disconnect', () => {
     console.log(`[Socket] Player disconnected: ${socket.id}`);
+    const { room, player } = current(true);
+    const drop = room && dropCoal(room, player);
+    if (drop) io.to(room.code).emit(...drop);
+
     const result = roomManager.removePlayer(socket.id);
     if (result && result.room.players.size > 0) {
       io.to(result.code).emit('player:left', { id: socket.id });
@@ -254,26 +269,31 @@ io.on('connection', (socket) => {
   });
 });
 
-// Round ends once every survivor still in the room has escaped or gone down
 function checkRoundOver(room) {
   if (room.state !== 'PLAYING') return;
-  const survivors = Array.from(room.players.values()).filter(p => p.role === 'SURVIVOR');
-  if (!survivors.every(p => p.isEscaped || p.isDowned)) return;
-
-  const results = {
-    won: survivors.some(p => p.isEscaped),
-    durationMs: Date.now() - room.stats.startTime,
-    players: Array.from(room.players.values()).map(p => ({
-      id: p.id,
-      name: p.name,
-      color: p.color,
-      escaped: p.isEscaped,
-      downed: p.isDowned
-    }))
-  };
-  roomManager.endRound(room);
+  const results = roundResult(room);
+  if (!results) return;
+  roomManager.endRound(room, results.won);
   io.to(room.code).emit('game:round_over', { results, room: serializeRoom(room) });
 }
+
+// World simulation: Cobb, revives and bleed-outs for every running round
+let lastTick = Date.now();
+setInterval(() => {
+  const now = Date.now();
+  const dt = Math.min(now - lastTick, 200); // don't let a stalled tick teleport Cobb
+  lastTick = now;
+  roomManager.rooms.forEach((room) => {
+    if (room.state !== 'PLAYING') return;
+    try {
+      tickRoom(room, dt, now).forEach(([event, data]) => io.to(room.code).emit(event, data));
+      io.to(room.code).emit('world:tick', snapshot(room));
+      checkRoundOver(room);
+    } catch (err) {
+      console.error(`[Tick] Room ${room.code} failed:`, err);
+    }
+  });
+}, TICK_MS);
 
 // The map is only needed in-game, so lobby updates leave it out
 function serializeRoom(room, withMap = false) {
@@ -286,6 +306,7 @@ function serializeRoom(room, withMap = false) {
     maxPlayers: room.maxPlayers,
     activeRules: room.activeRules,
     mapData: withMap ? room.mapData : undefined,
+    cobbs: withMap ? snapshot(room).cobbs : undefined,
     players: Array.from(room.players.entries()).map(([id, p]) => ({
       id,
       name: p.name,
@@ -299,6 +320,7 @@ function serializeRoom(room, withMap = false) {
       isSprinting: p.isSprinting,
       hasCoal: p.hasCoal,
       isDowned: p.isDowned,
+      isDead: p.isDead,
       isEscaped: p.isEscaped
     }))
   };
