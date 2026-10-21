@@ -45,6 +45,31 @@
       desc: 'Cobb freezes while someone faces it with their lantern. Look away and it rushes you.',
       tip: "Cover each other's backs. Someone keeps their light on Cobb while the others work."
     },
+    // Co-op twists: rules that only make sense with a team
+    TETHERED: {
+      title: 'TETHERED',
+      coop: true,
+      desc: 'Stray too far from your team and Cobb knows exactly where you are.',
+      tip: 'Move in pairs. If you must split up, keep within shouting distance of someone.'
+    },
+    HOT_COAL: {
+      title: 'HOT COAL',
+      coop: true,
+      desc: 'Coal burns your hands. Hold it too long and you drop it. Relay it to the fire.',
+      tip: 'Chain the coal: drop it where a teammate can grab it for the next leg.'
+    },
+    SHARED_HEARTBEAT: {
+      title: 'SHARED HEARTBEAT',
+      coop: true,
+      desc: 'If any of you dies, all of you go down.',
+      tip: 'Every downed teammate is everyone’s problem. Drop what you are doing and revive them.'
+    },
+    MIMIC: {
+      title: 'COBB CAN MIMIC',
+      coop: true,
+      desc: 'Cobb wears a teammate’s face until it is close enough to grab.',
+      tip: 'Check before you walk up to a teammate. A real one carries a lantern.'
+    },
     FREEZE: {
       title: 'FREEZE',
       debuff: true,
@@ -62,11 +87,14 @@
   const SENSES = ['SEE', 'HEAR', 'SMELL'];
   const POOL = ['SEE', 'HEAR', 'SMELL', 'REACH', 'FASTER', 'DUPLICATE', 'CANT_MOVE'];
   const DEBUFFS = ['FREEZE', 'STARVE'];
+  const COOP_TWISTS = ['TETHERED', 'HOT_COAL', 'SHARED_HEARTBEAT', 'MIMIC'];
   const STORY_LEVELS = 7;
 
   // Level 1 eases you in, level 2 always adds a sense, 3-6 roll from the pool (debuffs from 4),
   // and 7 onwards (the finale, then endless) stacks two rules plus a debuff.
-  function rollRules(level, rand = Math.random) {
+  // Co-op teams of two or more can also roll the co-op twists.
+  function rollRules(level, rand = Math.random, { mode = 'coop', players = 1 } = {}) {
+    const pool = mode === 'coop' && players >= 2 ? [...POOL, ...COOP_TWISTS] : POOL;
     const pick = (list, taken) => {
       const choices = list.filter(r => !taken.includes(r));
       return choices[Math.floor(rand() * choices.length)];
@@ -74,8 +102,8 @@
     const rules = ['MOVE'];
     if (level <= 1) return rules;
     if (level === 2) return [...rules, pick(SENSES, rules)];
-    rules.push(pick(POOL, rules));
-    if (level >= STORY_LEVELS) rules.push(pick(POOL, rules));
+    rules.push(pick(pool, rules));
+    if (level >= STORY_LEVELS) rules.push(pick(pool, rules));
     if (level >= STORY_LEVELS || (level >= 4 && rand() < 0.5)) rules.push(pick(DEBUFFS, rules));
     return rules;
   }
@@ -94,7 +122,11 @@
       cobbCount: has('DUPLICATE') ? (level >= 6 ? 3 : 2) : 1,
       cantMove: has('CANT_MOVE'),
       freeze: has('FREEZE'),
-      starve: has('STARVE')
+      starve: has('STARVE'),
+      tethered: has('TETHERED'),
+      hotCoal: has('HOT_COAL'),
+      sharedHeartbeat: has('SHARED_HEARTBEAT'),
+      mimic: has('MIMIC')
     };
   }
 

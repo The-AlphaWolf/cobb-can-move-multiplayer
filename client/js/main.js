@@ -44,6 +44,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const colorHex = (color) => `#${color.toString(16).padStart(6, '0')}`;
 
+  // A secret this browser keeps so it can reclaim its seat after a dropped connection
+  const playerId = (() => {
+    try {
+      let id = localStorage.getItem('cobbPlayerId');
+      if (!id) {
+        id = crypto.randomUUID();
+        localStorage.setItem('cobbPlayerId', id);
+      }
+      return id;
+    } catch (e) {
+      return crypto.randomUUID(); // storage blocked: still unique for this page
+    }
+  })();
+
   function setStatus(message) {
     menuStatus.textContent = message || '';
   }
@@ -100,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 4. Solo Run: a private one-player room that starts straight away
   btnSolo.addEventListener('click', () => {
-    socket.emit('room:create', { mode: 'coop', playerData: { name: playerName() } }, (res) => {
+    socket.emit('room:create', { mode: 'coop', playerData: { name: playerName() }, playerId }, (res) => {
       if (!res || !res.success) return setStatus(res ? res.message : 'Could not start solo run.');
       currentRoom = res.room;
       socket.emit('game:start');
@@ -109,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 5. Create Multiplayer Room
   btnCreateRoom.addEventListener('click', () => {
-    socket.emit('room:create', { mode: 'coop', playerData: { name: playerName() } }, (res) => {
+    socket.emit('room:create', { mode: 'coop', playerData: { name: playerName() }, playerId }, (res) => {
       if (res && res.success) {
         showLobbyView(res.room);
       } else {
@@ -126,7 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    socket.emit('room:join', { roomCode: code, playerData: { name: playerName() } }, (res) => {
+    socket.emit('room:join', { roomCode: code, playerData: { name: playerName() }, playerId }, (res) => {
       if (res && res.success) {
         showLobbyView(res.room);
       } else {
@@ -140,11 +154,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!currentRoom) return;
     const flash = (text) => {
       btnCopyCode.textContent = text;
-      setTimeout(() => btnCopyCode.textContent = 'COPY CODE', 1500);
+      setTimeout(() => btnCopyCode.textContent = 'COPY LINK', 1500);
     };
+    // A link that opens the menu with this room's code filled in
+    const link = `${location.origin}/?room=${currentRoom.code}`;
     // navigator.clipboard is missing on plain-http LAN addresses
     if (!navigator.clipboard) return flash('COPY BLOCKED');
-    navigator.clipboard.writeText(currentRoom.code).then(() => flash('COPIED!'), () => flash('COPY BLOCKED'));
+    navigator.clipboard.writeText(link).then(() => flash('COPIED!'), () => flash('COPY BLOCKED'));
   });
 
   // 8. Ready Toggle
@@ -224,8 +240,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const statusSpan = document.createElement('span');
       const ready = p.isHost || p.ready;
-      statusSpan.className = `player-status-tag ${ready ? 'ready' : ''}`;
-      statusSpan.textContent = p.isHost ? 'HOST' : (p.ready ? 'READY' : 'WAITING');
+      statusSpan.className = `player-status-tag ${ready && !p.away ? 'ready' : ''}`;
+      statusSpan.textContent = p.away ? 'RECONNECTING' : (p.isHost ? 'HOST' : (p.ready ? 'READY' : 'WAITING'));
 
       card.appendChild(nameSpan);
       card.appendChild(statusSpan);
@@ -233,11 +249,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function showResults({ won, level, storyComplete, tip, durationMs, players }) {
-    resultsTitle.textContent = storyComplete
-      ? 'YOU ESCAPED THE FACILITY'
-      : (won ? `LEVEL ${level} CLEARED` : `CAUGHT ON LEVEL ${level}`);
-    resultsTitle.className = `results-title ${won ? 'won' : 'lost'}`;
+  function showResults({ won, mode, winnerId, level, storyComplete, tip, durationMs, players }) {
+    const winner = players.find(p => p.id === winnerId);
+    let title = storyComplete ? 'YOU ESCAPED THE FACILITY' : (won ? `LEVEL ${level} CLEARED` : `CAUGHT ON LEVEL ${level}`);
+    if (mode === 'versus') title = won ? 'THE SURVIVORS ESCAPED' : 'COBB WINS';
+    if (mode === 'race') title = winner ? `${winner.name.toUpperCase()} WINS THE RACE` : 'NOBODY MADE IT OUT';
+    // Green when this player came out on top
+    const me = players.find(p => p.id === socket.id);
+    const iWon = mode === 'race' ? winnerId === socket.id : (me && me.status === 'cobb' ? !won : won);
+    resultsTitle.textContent = title;
+    resultsTitle.className = `results-title ${iWon ? 'won' : 'lost'}`;
     const secs = Math.round(durationMs / 1000);
     resultsTime.textContent = `ROUND TIME ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
     resultsTip.textContent = tip
@@ -256,7 +277,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const statusSpan = document.createElement('span');
       statusSpan.className = `player-status-tag ${p.status === 'escaped' ? 'ready' : ''}`;
-      statusSpan.textContent = p.status === 'escaped' ? 'ESCAPED' : 'CAUGHT';
+      statusSpan.textContent = { escaped: 'ESCAPED', caught: 'CAUGHT', cobb: 'WAS COBB' }[p.status];
 
       card.appendChild(nameSpan);
       card.appendChild(statusSpan);
@@ -303,11 +324,38 @@ document.addEventListener('DOMContentLoaded', () => {
     chatMessages.scrollTop = chatMessages.scrollHeight;
   });
 
+  // Dropped connection: Socket.IO reconnects on its own; then we reclaim our seat
   socket.on('disconnect', () => {
     stopPhaser();
     gameHud.classList.add('hidden');
     uiOverlay.classList.remove('hidden');
-    showView(viewInitial);
-    setStatus('Lost connection to the server. Reload to play again.');
+    setStatus(currentRoom ? 'Connection lost. Reconnecting...' : 'Lost connection to the server.');
   });
+
+  socket.on('connect', () => {
+    if (!currentRoom) return;
+    socket.emit('room:rejoin', { roomCode: currentRoom.code, playerId }, (res) => {
+      if (!res || !res.success) {
+        currentRoom = null;
+        showView(viewInitial);
+        setStatus(res ? res.message : 'Could not get back into the room.');
+        return;
+      }
+      if (res.room.state === 'PLAYING') {
+        currentRoom = res.room;
+        uiOverlay.classList.add('hidden');
+        gameHud.classList.remove('hidden');
+        initPhaser(res.room);
+      } else {
+        showLobbyView(res.room);
+      }
+    });
+  });
+
+  // Opened from a shared link: fill in the room code
+  const linkedRoom = new URLSearchParams(location.search).get('room');
+  if (linkedRoom) {
+    inputRoomCode.value = linkedRoom.slice(0, 4).toUpperCase();
+    setStatus('Pick a codename, then press JOIN ROOM.');
+  }
 });

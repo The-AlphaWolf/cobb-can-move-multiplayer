@@ -42,6 +42,7 @@ async function main() {
 
   const a = io(URL, { forceNew: true });
   const b = io(URL, { forceNew: true });
+  let b2 = null;
   try {
     await Promise.all([next(a, 'connect'), next(b, 'connect')]);
 
@@ -55,12 +56,12 @@ async function main() {
     await wait(200);
     assert.strictEqual((await (await fetch(`${URL}/health`)).json()).status, 'ok');
 
-    // Unbuilt modes fall back to coop, and lobby payloads carry no map
-    const created = await ask(a, 'room:create', { mode: 'versus', playerData: { name: 'Host' } });
+    // Unknown modes fall back to coop, and lobby payloads carry no map
+    const created = await ask(a, 'room:create', { mode: 'banana', playerData: { name: 'Host' }, playerId: 'host-secret' });
     assert(created.success);
     assert.strictEqual(created.room.mode, 'coop');
     assert.strictEqual(created.room.mapData, undefined);
-    const joined = await ask(b, 'room:join', { roomCode: created.roomCode.toLowerCase(), playerData: { name: 'Joiner' } });
+    const joined = await ask(b, 'room:join', { roomCode: created.roomCode.toLowerCase(), playerData: { name: 'Joiner' }, playerId: 'joiner-secret' });
     assert(joined.success, joined.message);
 
     // Host can't start until everyone else is ready
@@ -124,11 +125,26 @@ async function main() {
     a.emit('chat:send', { message: 'x'.repeat(300) });
     assert.strictEqual((await chat).message.length, 100);
 
+    // A dropped player keeps their seat and can reclaim it mid-round with their secret
+    const away = next(a, 'player:away');
+    const oldId = b.id;
+    b.disconnect();
+    assert.strictEqual((await away).id, oldId);
+    b2 = io(URL, { forceNew: true });
+    await next(b2, 'connect');
+    const wrong = await ask(b2, 'room:rejoin', { roomCode: created.roomCode, playerId: 'not-it' });
+    assert(!wrong.success, 'rejoin must need the right secret');
+    const rejoined = next(a, 'player:rejoined');
+    const back = await ask(b2, 'room:rejoin', { roomCode: created.roomCode, playerId: 'joiner-secret' });
+    assert(back.success && back.room.state === 'PLAYING' && back.room.mapData, 'rejoin returns the running round');
+    assert.deepStrictEqual(await rejoined, { oldId, newId: b2.id });
+
     assert.strictEqual((await (await fetch(`${URL}/health`)).json()).status, 'ok');
     console.log('PASS smoke test');
   } finally {
     a.close();
     b.close();
+    if (b2) b2.close();
     server.kill();
   }
 }

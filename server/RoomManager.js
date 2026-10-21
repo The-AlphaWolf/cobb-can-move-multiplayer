@@ -3,8 +3,7 @@ const CONSTANTS = require('../shared/constants');
 const { rollRules, ruleConfig } = require('../shared/rules');
 const { buildWalkGrid, createCobbs } = require('./cobb');
 
-// Modes players can pick; add 'versus' and 'race' here once they are built
-const MODES = ['coop'];
+const MODES = ['coop', 'versus', 'race'];
 
 class RoomManager {
   constructor() {
@@ -102,6 +101,9 @@ class RoomManager {
     p.trail = [];          // scent breadcrumbs
     p.trailAt = 0;
     p.lanternDim = false;  // shuttered lantern
+    p.coalSince = 0;       // when they picked up the coal they carry (HOT COAL)
+    p.deposited = 0;       // coal this player fed the furnace (RACE)
+    p.stunnedUntil = 0;    // hit by a rival's rock (RACE)
   }
 
   // Fresh map, Cobb and player state for a new round
@@ -111,23 +113,50 @@ class RoomManager {
     room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
     room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
     room.walk = buildWalkGrid(room.mapData, room.safeRadius);
-    if (room.rulesLevel !== room.level) {
-      room.activeRules = rollRules(room.level);
+    const players = Array.from(room.players.values());
+    if (room.rulesLevel !== room.level || room.rulesMode !== room.mode) {
+      room.activeRules = rollRules(room.level, Math.random, { mode: room.mode, players: players.length });
       room.rulesLevel = room.level;
+      room.rulesMode = room.mode;
     }
     room.cfg = ruleConfig(room.activeRules, room.level);
     room.cobbs = createCobbs(room.mapData, now, room.cfg.cobbCount);
     room.noises = [];
     room.nextRockId = 0;
     room.lastDownCause = null;
+    room.raceWinner = null;
     room.state = 'PLAYING';
     room.stats.startTime = now;
 
     let index = 0;
-    room.players.forEach((p) => {
+    players.forEach((p) => {
       this.resetRoundState(p);
       this.placeAtSpawn(room, p, index++);
     });
+
+    // VERSUS: the Cobb role rotates through the room, one round each
+    if (room.mode === 'versus') {
+      const present = players.filter(p => !p.away);
+      room.cobbTurn = ((room.cobbTurn ?? -1) + 1) % present.length;
+      const hunter = present[room.cobbTurn];
+      hunter.role = 'COBB';
+      room.cobbs[0].controlledBy = hunter.id;
+      hunter.x = room.cobbs[0].x;
+      hunter.y = room.cobbs[0].y;
+    }
+
+    // More survivors, more coal to find (up to what the map holds); race counts per player
+    const survivors = players.filter(p => p.role === 'SURVIVOR').length;
+    const f = room.mapData.furnace;
+    f.coalRequired = room.mode === 'race'
+      ? CONSTANTS.RACE.QUOTA
+      : Math.min(room.mapData.coal.length, 3 + survivors);
+
+    // MIMIC: each Cobb borrows a survivor's look
+    if (room.cfg.mimic) {
+      const faces = players.filter(p => p.role === 'SURVIVOR');
+      room.cobbs.forEach((c, i) => { c.mimicId = faces[i % faces.length].id; });
+    }
   }
 
   // Players stay ready between rounds so the host can retry straight away
@@ -143,15 +172,22 @@ class RoomManager {
         if (room.players.size === 0) {
           this.rooms.delete(code);
         } else if (room.hostId === socketId) {
-          // Pass host to next player
-          const nextHost = room.players.keys().next().value;
-          room.hostId = nextHost;
-          room.players.get(nextHost).isHost = true;
+          this.passHost(room);
         }
         return { code, room };
       }
     }
     return null;
+  }
+
+  // Hand the host role to a connected player, if there is one
+  passHost(room) {
+    const next = Array.from(room.players.values()).find(p => !p.away && p.id !== room.hostId);
+    if (!next) return;
+    const old = room.players.get(room.hostId);
+    if (old) old.isHost = false;
+    room.hostId = next.id;
+    next.isHost = true;
   }
 
   // First colour nobody in the room is using

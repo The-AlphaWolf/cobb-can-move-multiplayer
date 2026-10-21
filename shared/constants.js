@@ -77,6 +77,19 @@ const CONSTANTS = {
     AMBIENT: 0x111118,
     MAX_LIGHTS: 16
   },
+  VERSUS: {
+    COBB_SPEED: 150,       // a player-controlled Cobb: faster than walking, slower than sprinting
+    MIN_PLAYERS: 2
+  },
+  RACE: {
+    QUOTA: 3,              // coal each player must feed before their exit opens
+    PLAYER_STUN: 1500      // a rock to the head stops a rival this long
+  },
+  TWISTS: {
+    TETHER_RANGE: 320,     // TETHERED: farther than this from every teammate and Cobb knows
+    HOT_COAL_TIME: 8000    // HOT_COAL: ms you can hold coal before it burns your hands
+  },
+  RECONNECT_HOLD: 30000,   // a dropped player's seat is kept this long
   // The furnace burns coal; while it burns, its light is a zone Cobb won't enter
   FURNACE: {
     START_FUEL: 60000,     // ms of fire at the start of a round

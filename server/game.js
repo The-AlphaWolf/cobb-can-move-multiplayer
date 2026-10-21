@@ -8,6 +8,7 @@ const { stepCobb, separate, stun, isActive, inRoomLight, buildWalkGrid, toTile }
 const P = CONSTANTS.PLAYER;
 const REVIVE_SLACK = 24; // latency allowance on top of REVIVE_RADIUS
 const ROCK_HIT_RADIUS = 22;
+const VERSUS_TIP = "Cobb can't enter the fire's light. Move in pairs, keep the fire fed, and stun Cobb with rocks.";
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -62,17 +63,34 @@ function throwRock(room, p, target, now) {
   const range = Math.min(d, P.ROCK_RANGE);
   let land = { x: p.x, y: p.y };
   let hit = null;
-  for (let s = 8; s <= range && !hit; s += 8) {
+  // RACE: rivals are fair game too
+  const rivals = room.mode === 'race' ? Array.from(room.players.values()).filter(q => q !== p && isActive(q)) : [];
+  let hitPlayer = null;
+  for (let s = 8; s <= range && !hit && !hitPlayer; s += 8) {
     const pt = { x: p.x + dx * s, y: p.y + dy * s };
     if (room.mapData.grid[toTile(pt.y)][toTile(pt.x)] !== CONSTANTS.TILE_TYPES.FLOOR) break;
     land = pt;
     hit = room.cobbs.find(c => dist(c, pt) <= ROCK_HIT_RADIUS) || null;
+    hitPlayer = rivals.find(q => dist(q, pt) <= ROCK_HIT_RADIUS) || null;
   }
   if (hit) stun(hit, now);
   p.rocks -= 1;
   const rock = { id: `rock_${room.nextRockId++}`, x: Math.round(land.x), y: Math.round(land.y) };
   room.mapData.rocks.push(rock);
-  events.push(['rock:thrown', { by: p.id, from: { x: Math.round(p.x), y: Math.round(p.y) }, rock, hitCobb: hit ? hit.id : null }]);
+  events.push(['rock:thrown', {
+    by: p.id,
+    from: { x: Math.round(p.x), y: Math.round(p.y) },
+    rock,
+    hitCobb: hit ? hit.id : null,
+    hitPlayer: hitPlayer ? hitPlayer.id : null
+  }]);
+  if (hitPlayer) {
+    // Stunned rivals stand still for a moment and drop what they carry
+    hitPlayer.stunnedUntil = now + CONSTANTS.RACE.PLAYER_STUN;
+    const drop = dropCoal(room, hitPlayer);
+    if (drop) events.push(drop);
+    events.push(['player:stunned', { id: hitPlayer.id, until: hitPlayer.stunnedUntil, ms: CONSTANTS.RACE.PLAYER_STUN }]);
+  }
   const noise = makeNoise(room, land.x, land.y, CONSTANTS.NOISE.ROCK, now);
   if (noise) events.push(noise);
   return events;
@@ -119,7 +137,13 @@ function tickRoom(room, dtMs, now) {
   const players = Array.from(room.players.values());
   players.forEach((p) => {
     p.trail = p.trail.filter(c => now - c.t < CONSTANTS.TRAIL.LIFE);
-    if (isActive(p)) updateVitals(room, p, dtMs, events);
+    if (!isActive(p)) return;
+    updateVitals(room, p, dtMs, events);
+    // HOT COAL: hold it too long and it slips from your burnt hands
+    if (room.cfg.hotCoal && p.hasCoal && now - p.coalSince >= CONSTANTS.TWISTS.HOT_COAL_TIME) {
+      const drop = dropCoal(room, p);
+      if (drop) events.push(drop);
+    }
   });
 
   players.filter(p => p.isDowned).forEach((p) => {
@@ -143,6 +167,10 @@ function tickRoom(room, dtMs, now) {
       p.isDowned = false;
       p.isDead = true;
       events.push(['player:died', { id: p.id }]);
+      // SHARED HEARTBEAT: one death drops the whole team
+      if (room.cfg.sharedHeartbeat) {
+        players.filter(isActive).forEach(q => downPlayer(room, q, 'SHARED_HEARTBEAT', events));
+      }
     }
   });
 
@@ -169,7 +197,10 @@ function snapshot(room, now = Date.now()) {
       state: c.state,
       targetId: c.targetId,
       frozen: c.frozen,
-      stunned: now < c.stunnedUntil
+      stunned: now < c.stunnedUntil,
+      paused: now < c.pauseUntil,
+      controlledBy: c.controlledBy || null,
+      mimicId: c.mimicId || null
     })),
     downed: players
       .filter(p => p.isDowned)
@@ -180,26 +211,29 @@ function snapshot(room, now = Date.now()) {
   };
 }
 
-// The round ends once nobody is left standing. Downed players count as lost then,
-// since no one can revive them.
+// Co-op and versus end once no survivor is left standing (downed players count as lost then,
+// since no one can revive them). Race ends the moment someone escapes.
+// `won` is the survivors' result; in versus the Cobb player wins when it is false.
 function roundResult(room) {
   const survivors = Array.from(room.players.values()).filter(p => p.role === 'SURVIVOR');
-  if (survivors.some(isActive)) return null;
+  const raceOver = room.mode === 'race' && room.raceWinner;
+  if (!raceOver && survivors.some(isActive)) return null;
   const won = survivors.some(p => p.isEscaped);
-  const cause = room.lastDownCause === 'FREEZE' || room.lastDownCause === 'STARVE'
-    ? room.lastDownCause
-    : headline(room.activeRules);
+  const cause = RULES[room.lastDownCause] ? room.lastDownCause : headline(room.activeRules);
   return {
     won,
+    mode: room.mode,
+    winnerId: room.mode === 'race' ? room.raceWinner || null : null,
     level: room.level,
-    storyComplete: won && room.level === STORY_LEVELS,
-    tip: won ? null : RULES[cause].tip,
+    storyComplete: room.mode === 'coop' && won && room.level === STORY_LEVELS,
+    // A human Cobb doesn't follow the AI's habits, so Versus gets its own advice
+    tip: won ? null : (room.mode === 'versus' ? VERSUS_TIP : RULES[cause].tip),
     durationMs: Date.now() - room.stats.startTime,
     players: Array.from(room.players.values()).map(p => ({
       id: p.id,
       name: p.name,
       color: p.color,
-      status: p.isEscaped ? 'escaped' : 'caught'
+      status: p.role === 'COBB' ? 'cobb' : (p.isEscaped ? 'escaped' : 'caught')
     }))
   };
 }

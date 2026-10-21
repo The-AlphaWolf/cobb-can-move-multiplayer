@@ -56,7 +56,7 @@
       <div id="view-lobby" class="menu-view">
         <div class="lobby-header">
           <div class="room-code-tag">ROOM CODE: <span id="display-room-code">----</span> · LEVEL <span id="display-level">1</span></div>
-          <button id="btn-copy-code" class="btn-sm">COPY CODE</button>
+          <button id="btn-copy-code" class="btn-sm">COPY LINK</button>
         </div>
 
         <div class="lobby-columns">
@@ -68,8 +68,8 @@
               <label>GAME MODE:</label>
               <select id="select-game-mode">
                 <option value="coop">🤝 CO-OP SURVIVAL (Team Escape)</option>
-                <option value="versus" disabled>🔪 VERSUS (One Player is Cobb) — SOON</option>
-                <option value="race" disabled>🏁 RACE MODE (Competitive Sabotage) — SOON</option>
+                <option value="versus">🔪 VERSUS (One Player is Cobb)</option>
+                <option value="race">🏁 RACE (First Out Wins, Rocks Stun Rivals)</option>
               </select>
             </div>
           </div>
@@ -141,6 +141,7 @@
     
     <!-- Active rules for this level -->
     <div id="hud-rules" class="hud-rules"></div>
+    <div id="hud-warning" class="hud-warning hidden"></div>
 
     <!-- Top-Right Minimap Radar -->
     <div class="hud-minimap-box" id="minimap-box">

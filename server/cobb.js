@@ -125,7 +125,8 @@ function createCobbs(mapData, now, count = 1) {
   }));
 }
 
-const isActive = (p) => p.role === 'SURVIVOR' && !p.isEscaped && !p.isDowned && !p.isDead;
+// Standing survivors who are connected; a dropped player's held seat doesn't count
+const isActive = (p) => p.role === 'SURVIVOR' && !p.isEscaped && !p.isDowned && !p.isDead && !p.away;
 
 // Players Cobb can go after: standing, and not sheltering in the furnace's light
 const isPrey = (room, p) => isActive(p) && !inSafeZone(room, p);
@@ -192,14 +193,23 @@ function investigate(cobb, room, spot) {
   }
 }
 
-// Senses, strongest first: someone right there, someone seen, a noise, a scent
+// TETHERED: farther than the tether from every other standing teammate
+function isStraying(room, p) {
+  for (const q of room.players.values()) {
+    if (q !== p && isActive(q) && dist(p, q) <= CONSTANTS.TWISTS.TETHER_RANGE) return false;
+  }
+  return true;
+}
+
+// Senses, strongest first: someone right there, someone seen (or straying), a noise, a scent
 function perceive(cobb, room, now) {
   const cfg = room.cfg;
   let best = null;
   room.players.forEach((p) => {
     if (!isPrey(room, p)) return;
     const d = dist(cobb, p);
-    if ((d <= C.AGGRO_RADIUS || (cfg.see && canSee(cobb, room, p))) && (!best || d < best.d)) best = { p, d };
+    const noticed = d <= C.AGGRO_RADIUS || (cfg.see && canSee(cobb, room, p)) || (cfg.tethered && isStraying(room, p));
+    if (noticed && (!best || d < best.d)) best = { p, d };
   });
   if (best) {
     startChase(cobb, best.p, now);
@@ -265,6 +275,12 @@ function stepCobb(cobb, room, dt, now) {
   const cfg = room.cfg;
   const players = room.players;
 
+  // VERSUS: a player steers this Cobb; the server only freezes it and checks its grabs
+  if (cobb.controlledBy) {
+    cobb.frozen = cfg.cantMove && isWatched(cobb, room);
+    return cobb.frozen ? null : grabCheck(cobb, room, now);
+  }
+
   if (cobb.state !== 'CHASE') perceive(cobb, room, now);
 
   let speed = C.WANDER_SPEED;
@@ -272,7 +288,8 @@ function stepCobb(cobb, room, dt, now) {
   if (cobb.state === 'CHASE') {
     const target = players.get(cobb.targetId);
     const d = target ? dist(cobb, target) : Infinity;
-    const stillSeen = target && cfg.see && canSee(cobb, room, target);
+    // SEE keeps a chase going down a long corridor; TETHERED keeps it on a straggler anywhere
+    const stillSeen = target && ((cfg.see && canSee(cobb, room, target)) || (cfg.tethered && isStraying(room, target)));
     if (!target || !isActive(target) || (d > C.LOSE_RADIUS && !stillSeen)) {
       // Lost them: walk to where they were last seen and look around
       cobb.state = 'SEARCH';
@@ -317,9 +334,12 @@ function stepCobb(cobb, room, dt, now) {
   }
 
   // A frozen Cobb can't lift its arms either
-  if (cobb.frozen) return null;
-  for (const p of players.values()) {
-    if (isPrey(room, p) && now >= (p.safeUntil || 0) && dist(cobb, p) <= cfg.reach) {
+  return cobb.frozen ? null : grabCheck(cobb, room, now);
+}
+
+function grabCheck(cobb, room, now) {
+  for (const p of room.players.values()) {
+    if (isPrey(room, p) && now >= (p.safeUntil || 0) && dist(cobb, p) <= room.cfg.reach) {
       // Grabbed: Cobb lingers, then loses interest and wanders off
       cobb.state = 'WANDER';
       cobb.targetId = null;
@@ -343,6 +363,7 @@ function separate(cobbs, walk) {
       const ny = d > 0.01 ? (a.y - b.y) / d : 0;
       const push = (C.SEPARATION - d) / 2;
       [[a, 1], [b, -1]].forEach(([c, s]) => {
+        if (c.controlledBy) return; // a player's Cobb goes where they steer it
         const x = c.x + nx * push * s;
         const y = c.y + ny * push * s;
         if (walk[toTile(y)][toTile(x)] === OPEN) {
@@ -366,5 +387,5 @@ function stun(cobb, now) {
 
 module.exports = {
   buildWalkGrid, findPath, lineOfSight, createCobbs, stepCobb, separate, stun,
-  isActive, inRoomLight, LIT, OPEN, toTile
+  isActive, inRoomLight, inSafeZone, LIT, OPEN, BLOCKED, toTile
 };

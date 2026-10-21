@@ -19,6 +19,11 @@ class GameScene extends Phaser.Scene {
     this.rocks = 0;
     this.lanternDim = false;
     this.vitals = { warmth: 100, hunger: 100 };
+    this.isCobb = this.me.role === 'COBB'; // VERSUS: this player hunts as Cobb
+    this.isRace = this.roomData.mode === 'race';
+    this.stunnedUntil = 0;  // RACE: hit by a rival's rock
+    this.cobbHeld = false;  // VERSUS: our Cobb is paused, stunned or watched
+    this.coalSince = 0;     // HOT COAL
   }
 
   create() {
@@ -30,6 +35,10 @@ class GameScene extends Phaser.Scene {
     const ts = window.CONSTANTS.TILE_SIZE;
     const worldW = this.mapData.width * ts;
     const worldH = this.mapData.height * ts;
+
+    // Physics bounds default to the canvas size (960x640); without this the east wing and
+    // the exit sit behind an invisible wall
+    this.physics.world.setBounds(0, 0, worldW, worldH);
 
     // 2. Build Dungeon Tilemap (Floors & Walls), lit by Phaser's Light2D
     this.lights.enable().setAmbientColor(window.CONSTANTS.LIGHTS.AMBIENT);
@@ -49,12 +58,12 @@ class GameScene extends Phaser.Scene {
 
     // 7. Cobb is simulated on the server; we only draw it
     this.cobbs = new Map();
-    this.roomData.cobbs.forEach(c => this.addCobb(c));
+    this.roomData.cobbs.filter(c => c.controlledBy !== this.myId).forEach(c => this.addCobb(c));
 
     // 8. Remote Players, placed at their server-assigned spawns
     this.remotePlayers = new Map();
     this.roomData.players
-      .filter(p => p.id !== this.myId && !p.isEscaped)
+      .filter(p => p.id !== this.myId && !p.isEscaped && p.role !== 'COBB')
       .forEach(p => this.addRemotePlayer(p));
 
     // 9. Lights: lantern, furnace fire, exit, breaker-powered lamps
@@ -171,7 +180,11 @@ class GameScene extends Phaser.Scene {
     // Every rule beyond the level-1 basics gets announced; stacked rules share the banner
     const news = rules.length > 1 ? rules.filter(r => r !== 'MOVE') : rules;
     const titles = news.filter(r => !RULES[r].debuff).map(r => RULES[r].title);
-    this.showRuleBanner(titles.join(' + ') || RULES[news[0]].title, news.map(r => RULES[r].desc).join(' '));
+    if (this.isCobb) {
+      this.showRuleBanner('YOU ARE COBB', `Catch every survivor before one escapes. The fire's light keeps you out. ${titles.join(', ')}.`);
+    } else {
+      this.showRuleBanner(titles.join(' + ') || RULES[news[0]].title, news.map(r => RULES[r].desc).join(' '));
+    }
 
     const strip = document.getElementById('hud-rules');
     strip.innerHTML = '';
@@ -192,11 +205,17 @@ class GameScene extends Phaser.Scene {
   }
 
   createPlayer() {
-    this.player = this.physics.add.sprite(this.me.x, this.me.y, 'player_sprite').setPipeline('Light2D');
-    this.player.setTint(this.me.color);
+    this.player = this.physics.add.sprite(this.me.x, this.me.y, this.isCobb ? 'cobb_sprite' : 'player_sprite')
+      .setPipeline('Light2D');
     this.player.setCollideWorldBounds(true);
-    this.player.body.setSize(18, 18);
-    this.player.body.setOffset(7, 7);
+    if (this.isCobb) {
+      this.player.body.setSize(18, 22);
+      this.player.body.setOffset(7, 9);
+    } else {
+      this.player.setTint(this.me.color);
+      this.player.body.setSize(18, 18);
+      this.player.body.setOffset(7, 7);
+    }
     this.player.setDepth(10); // Render above floor and items
 
     this.player.stamina = window.CONSTANTS.PLAYER.MAX_STAMINA;
@@ -219,6 +238,27 @@ class GameScene extends Phaser.Scene {
     return sprite;
   }
 
+  // COBB CAN MIMIC: wear a survivor's look (no lantern, though) until close or hunting
+  applyMimic(sprite, c) {
+    const face = c.mimicId && this.roomData.players.find(p => p.id === c.mimicId);
+    const close = Phaser.Math.Distance.Between(sprite.x, sprite.y, this.player.x, this.player.y) < 90;
+    const disguised = !!face && !close && c.state !== 'CHASE';
+    sprite.setTexture(disguised ? 'player_sprite' : 'cobb_sprite');
+    if (disguised) sprite.setTint(face.color);
+    if (!sprite.fakeLabel && face) {
+      sprite.fakeLabel = this.add.text(0, 0, face.name, {
+        fontFamily: 'Share Tech Mono, monospace',
+        fontSize: '8px',
+        color: `#${face.color.toString(16).padStart(6, '0')}`,
+        resolution: 4
+      }).setOrigin(0.5, 1).setDepth(12);
+    }
+    if (sprite.fakeLabel) {
+      sprite.fakeLabel.setVisible(disguised && !this.isCobb);
+      sprite.fakeLabel.setPosition(sprite.x, sprite.y - 14);
+    }
+  }
+
   // Tighter smoothing than for players: a Cobb drawn behind its real position makes grabs look unfair
   updateCobbs(delta) {
     const t = Math.min(1, delta / 40);
@@ -232,7 +272,10 @@ class GameScene extends Phaser.Scene {
     const L = window.CONSTANTS.LIGHTS;
     const f = this.mapData.furnace;
     const e = this.mapData.exit;
-    this.lanternLight = this.lights.addLight(this.player.x, this.player.y, L.LANTERN_RADIUS, 0xffcf8a, 1.2);
+    // Cobb has no lantern, just a dim red sense of its surroundings that only its player sees
+    this.lanternLight = this.isCobb
+      ? this.lights.addLight(this.player.x, this.player.y, 110, 0xff5555, 1.0)
+      : this.lights.addLight(this.player.x, this.player.y, L.LANTERN_RADIUS, 0xffcf8a, 1.2);
     this.furnaceLight = this.lights.addLight(f.x, f.y, window.CONSTANTS.furnaceRadius(f.fuel), 0xff7a2a, 1.6);
     this.exitLight = this.lights.addLight(e.x, e.y, 70, 0xff3344, 1.2);
 
@@ -264,9 +307,14 @@ class GameScene extends Phaser.Scene {
     const t = this.time.now;
     const lanternOn = this.status === 'active' || this.status === 'downed';
     this.lanternLight.setPosition(this.player.x, this.player.y);
+    if (this.isCobb) return this.updateFurnaceLight(t);
     const L = window.CONSTANTS.LIGHTS;
     this.lanternLight.setRadius(this.status === 'downed' ? 60 : (this.lanternDim ? L.LANTERN_STEALTH : L.LANTERN_RADIUS));
     this.lanternLight.setIntensity(lanternOn ? 1.9 + Math.sin(t / 150) * 0.12 : 0);
+    this.updateFurnaceLight(t);
+  }
+
+  updateFurnaceLight(t) {
     const fuel = this.mapData.furnace.fuel;
     this.furnaceLight.setRadius(window.CONSTANTS.furnaceRadius(fuel) * (1 + Math.sin(t / 200) * 0.03));
     this.furnaceLight.setIntensity(fuel > 0 ? 2.4 : 1.0);
@@ -277,7 +325,11 @@ class GameScene extends Phaser.Scene {
 
     const active = this.status === 'active';
     this.handleMapToggle();
-    if (active) {
+    if (this.isCobb) {
+      this.handleCobbMovement();
+    } else if (active && this.time.now < this.stunnedUntil) {
+      this.player.setVelocity(0, 0); // RACE: dazed by a rival's rock
+    } else if (active) {
       if (Phaser.Input.Keyboard.JustDown(this.wasd.lantern)) {
         this.lanternDim = !this.lanternDim;
         this.updateHUD();
@@ -296,6 +348,7 @@ class GameScene extends Phaser.Scene {
     this.updateCobbs(delta);
     this.updateLights();
     this.updateMinimap(delta);
+    this.updateWarnings();
 
     // Network Sync (20 ticks/sec)
     this.networkSendTimer -= delta;
@@ -358,8 +411,13 @@ class GameScene extends Phaser.Scene {
       remote.light.setRadius(remote.state === 'downed' ? 60 : (remote.lanternDim ? L.LANTERN_STEALTH : L.LANTERN_RADIUS));
       remote.light.setIntensity(remote.state === 'dead' ? 0 : 1.7);
 
+      // Cobb's player gets no name tags: it has to find people by their light
+      remote.label.setVisible(!this.isCobb);
+      remote.light.setIntensity(remote.away ? 0 : remote.light.intensity);
       let text = remote.name;
-      if (remote.state === 'dead') {
+      if (remote.away) {
+        text += ' · AWAY';
+      } else if (remote.state === 'dead') {
         text += ' · DEAD';
       } else if (remote.state === 'downed') {
         text += remote.progress > 0
@@ -452,6 +510,53 @@ class GameScene extends Phaser.Scene {
     const btnToggle = document.getElementById('btn-toggle-map');
     minimapBox.classList.toggle('expanded');
     btnToggle.textContent = minimapBox.classList.contains('expanded') ? '[M] CLOSE' : '[M] FULL';
+  }
+
+  // VERSUS: steer Cobb. No sprint, no items; the fire's light pushes you back out.
+  handleCobbMovement() {
+    let moveX = 0;
+    let moveY = 0;
+    if (this.cursors.left.isDown || this.wasd.left.isDown) moveX -= 1;
+    if (this.cursors.right.isDown || this.wasd.right.isDown) moveX += 1;
+    if (this.cursors.up.isDown || this.wasd.up.isDown) moveY -= 1;
+    if (this.cursors.down.isDown || this.wasd.down.isDown) moveY += 1;
+    if (moveX < 0) this.player.setFlipX(true);
+    else if (moveX > 0) this.player.setFlipX(false);
+    if (this.cobbHeld) moveX = moveY = 0;
+
+    const C = window.CONSTANTS;
+    const speed = C.VERSUS.COBB_SPEED * this.cfg.speedMul * (this.cfg.cantMove ? C.COBB.UNWATCHED_MUL : 1);
+    const velocity = new Phaser.Math.Vector2(moveX, moveY).normalize().scale(speed);
+    this.player.setVelocity(velocity.x, velocity.y);
+
+    const f = this.mapData.furnace;
+    const safe = C.safeRadius(f.fuel);
+    const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, f.x, f.y);
+    if (d < safe && d > 0) {
+      this.player.x = f.x + ((this.player.x - f.x) / d) * safe;
+      this.player.y = f.y + ((this.player.y - f.y) / d) * safe;
+    }
+  }
+
+  // Warnings for co-op twists: straying under TETHERED, hot coal under HOT COAL
+  updateWarnings() {
+    const el = document.getElementById('hud-warning');
+    let text = '';
+    if (!this.isCobb && this.status === 'active') {
+      if (this.cfg.tethered) {
+        const near = Array.from(this.remotePlayers.values()).some(r => r.state === 'active' && !r.away &&
+          Phaser.Math.Distance.Between(this.player.x, this.player.y, r.x, r.y) <= window.CONSTANTS.TWISTS.TETHER_RANGE);
+        if (!near && this.remotePlayers.size) text = 'ALONE: COBB KNOWS WHERE YOU ARE';
+      }
+      if (this.cfg.hotCoal && this.player.hasCoal) {
+        const left = Math.ceil((window.CONSTANTS.TWISTS.HOT_COAL_TIME - (Date.now() - this.coalSince)) / 1000);
+        text = `HOT COAL: ${Math.max(0, left)}s BEFORE YOU DROP IT`;
+      }
+    }
+    if (el.textContent !== text) {
+      el.textContent = text;
+      el.classList.toggle('hidden', !text);
+    }
   }
 
   handlePlayerMovement(delta) {
@@ -601,8 +706,11 @@ class GameScene extends Phaser.Scene {
     const heldElem = document.getElementById('held-item-name');
 
     if (coalElem) {
-      coalElem.textContent = `${this.mapData.furnace.coalDeposited} / ${this.mapData.furnace.coalRequired}`;
+      coalElem.textContent = this.isRace
+        ? `${this.me.deposited || 0} / ${this.mapData.furnace.coalRequired} (YOURS)`
+        : `${this.mapData.furnace.coalDeposited} / ${this.mapData.furnace.coalRequired}`;
     }
+    document.querySelectorAll('.hud-bottom-bar .item-slot').forEach(el => el.classList.toggle('hidden', this.isCobb));
     if (exitElem) {
       if (this.mapData.exit.unlocked) {
         exitElem.textContent = 'UNLOCKED';
@@ -660,6 +768,41 @@ class GameScene extends Phaser.Scene {
 
       'player:left': (data) => {
         this.removeRemotePlayer(data.id);
+      },
+
+      // Dropped connections: their seat is held for a while, then they may come back as a new id
+      'player:away': (data) => {
+        const remote = this.remotePlayers.get(data.id);
+        if (remote) remote.away = true;
+      },
+      'player:rejoined': (data) => {
+        const remote = this.remotePlayers.get(data.oldId);
+        if (!remote) return;
+        this.remotePlayers.delete(data.oldId);
+        this.remotePlayers.set(data.newId, remote);
+        remote.away = false;
+      },
+
+      // RACE: a rival's rock dazes you
+      'player:stunned': (data) => {
+        if (data.id === this.myId) {
+          this.stunnedUntil = this.time.now + data.ms;
+          this.cameras.main.shake(200, 0.02);
+          this.showRuleBanner('DAZED', 'A rival hit you with a rock.');
+          return;
+        }
+        const remote = this.remotePlayers.get(data.id);
+        if (remote) this.tweens.add({ targets: remote, alpha: 0.3, duration: 120, yoyo: true, repeat: 4 });
+      },
+
+      // VERSUS + SMELL: the Cobb player sees fresh scent as fading dots
+      'cobb:scent': (data) => {
+        if (!this.scentGfx) this.scentGfx = this.add.graphics().setDepth(3);
+        this.scentGfx.clear();
+        data.crumbs.forEach((c) => {
+          this.scentGfx.fillStyle(0x9cff6b, Math.max(0.1, 0.8 - c.age / window.CONSTANTS.TRAIL.LIFE));
+          this.scentGfx.fillCircle(c.x, c.y, 3);
+        });
       },
 
       'player:escaped': (data) => this.applyPlayerState(data.id, 'escaped'),
@@ -721,6 +864,12 @@ class GameScene extends Phaser.Scene {
           this.updateVitalsHUD();
         }
         data.cobbs.forEach((c) => {
+          // VERSUS: we are this Cobb; just learn whether it may move right now
+          if (c.controlledBy === this.myId) {
+            this.cobbHeld = c.paused || c.frozen;
+            this.player.setTint(c.frozen ? 0x8899ff : 0xffffff);
+            return;
+          }
           const sprite = this.cobbs.get(c.id) || this.addCobb(c);
           sprite.targetX = c.x;
           sprite.targetY = c.y;
@@ -728,6 +877,7 @@ class GameScene extends Phaser.Scene {
           // Frozen by a watching light: cold blue. Stunned by a rock: flickers.
           sprite.setTint(c.frozen ? 0x8899ff : 0xffffff);
           sprite.setAlpha(c.stunned ? 0.5 + Math.sin(this.time.now / 60) * 0.3 : 1);
+          this.applyMimic(sprite, c);
           // Jolt the camera the moment Cobb locks on to us
           const chasingMe = c.state === 'CHASE' && c.targetId === this.myId;
           if (chasingMe && !sprite.chasingMe) this.cameras.main.shake(150, 0.01);
@@ -758,6 +908,7 @@ class GameScene extends Phaser.Scene {
         }
         if (data.collectedBy === this.myId) {
           this.player.hasCoal = true;
+          this.coalSince = Date.now();
           this.cameras.main.flash(150, 255, 170, 34);
           this.updateHUD();
         }
@@ -765,12 +916,14 @@ class GameScene extends Phaser.Scene {
 
       'furnace:updated': (data) => {
         this.mapData.furnace.coalDeposited = data.coalDeposited;
-        this.mapData.exit.unlocked = data.exitUnlocked;
         this.mapData.furnace.fuel = data.fuel;
-        this.setExitUnlocked(data.exitUnlocked);
+        if (data.depositedBy === this.myId) this.me.deposited = data.playerDeposited;
+        // In a race the exit opens per player, once your own quota is in
+        const open = this.isRace ? (this.me.deposited || 0) >= this.mapData.furnace.coalRequired : data.exitUnlocked;
+        this.setExitUnlocked(open);
         if (data.depositedBy === this.myId) {
           this.player.hasCoal = false;
-          if (data.exitUnlocked) {
+          if (open) {
             this.cameras.main.flash(500, 56, 239, 125);
           } else {
             this.cameras.main.flash(200, 255, 100, 0);
@@ -822,6 +975,8 @@ class GameScene extends Phaser.Scene {
     });
     const me = room.players.find(p => p.id === this.myId);
     if (me) {
+      this.me.deposited = me.deposited;
+      if (this.isRace) this.setExitUnlocked(me.deposited >= room.mapData.furnace.coalRequired);
       this.rocks = me.rocks;
       this.vitals = { warmth: me.warmth, hunger: me.hunger };
       this.updateVitalsHUD();
@@ -951,9 +1106,9 @@ class GameScene extends Phaser.Scene {
     ctx.arc(px, py, 3 + pulse, 0, Math.PI * 2);
     ctx.stroke();
 
-    // 7. Draw Remote Players in their own colours
+    // 7. Draw Remote Players in their own colours (survivors only: Cobb has to hunt)
     this.remotePlayers.forEach((remote) => {
-      if (remote.active) {
+      if (remote.active && !this.isCobb) {
         const rx = (remote.x / 32) * scale;
         const ry = (remote.y / 32) * scale;
         ctx.fillStyle = remote.state === 'dead' ? '#555555' : remote.colorHex;
