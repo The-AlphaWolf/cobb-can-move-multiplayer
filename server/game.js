@@ -217,7 +217,9 @@ function snapshot(room, now = Date.now()) {
 function roundResult(room) {
   const survivors = Array.from(room.players.values()).filter(p => p.role === 'SURVIVOR');
   const raceOver = room.mode === 'race' && room.raceWinner;
-  if (!raceOver && survivors.some(isActive)) return null;
+  // A dropped player who might still come back keeps the round open (their seat is held)
+  const pending = p => p.away && !p.isEscaped && !p.isDowned && !p.isDead;
+  if (!raceOver && survivors.some(p => isActive(p) || pending(p))) return null;
   const won = survivors.some(p => p.isEscaped);
   const cause = RULES[room.lastDownCause] ? room.lastDownCause : headline(room.activeRules);
   return {

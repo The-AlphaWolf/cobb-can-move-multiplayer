@@ -137,4 +137,14 @@ assert.strictEqual(room('coop', 3).r.mapData.furnace.coalRequired, 6);
   assert(r.cobbs.every(c => r.players.has(c.mimicId)));
 }
 
+// 9. A dropped player keeps the round open until their seat expires; Cobb ignores them meanwhile
+{
+  const { r, ps } = room('coop', 1, ['MOVE']);
+  r.cobbs = [];
+  ps[0].away = true;
+  assert.strictEqual(roundResult(r), null, 'a solo player dropping must not end their run');
+  r.players.delete(ps[0].id);
+  assert(roundResult(r), 'once the seat is gone the round can end');
+}
+
 console.log('PASS modes');

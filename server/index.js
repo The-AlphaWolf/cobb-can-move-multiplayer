@@ -23,6 +23,7 @@ const TICK_MS = 50; // 20 world updates a second
 const BREAKER_COOLDOWN = 500;
 const THROW_COOLDOWN = 600;
 const SPRINT_NOISE_INTERVAL = 400;
+const MAX_ROOMS = 200; // one small server's worth; stops a script from creating rooms forever
 
 // Serve static client files
 app.use(express.static(path.join(__dirname, '../client')));
@@ -80,6 +81,7 @@ io.on('connection', (socket) => {
   // Create Room
   on('room:create', ({ mode, playerData, playerId }, ack) => {
     if (socket.roomCode) return fail(ack, 'Already in a room.');
+    if (roomManager.rooms.size >= MAX_ROOMS) return fail(ack, 'The server is full. Try again in a few minutes.');
     const room = roomManager.createRoom(socket.id, { mode });
     enterRoom(room, playerData, playerId, ack);
   });
@@ -356,11 +358,8 @@ io.on('connection', (socket) => {
         c.heldFor = player.id;
       }
     });
+    // The room survives until the last held seat expires, so even a solo player can come back
     if (room.hostId === player.id) roomManager.passHost(room);
-    if (Array.from(room.players.values()).every(p => p.away)) {
-      roomManager.rooms.delete(room.code); // nobody left to come back to
-      return;
-    }
     io.to(room.code).emit('player:away', { id: player.id });
     io.to(room.code).emit('room:updated', { room: serializeRoom(room) });
     checkRoundOver(room);

@@ -234,6 +234,9 @@ document.addEventListener('DOMContentLoaded', () => {
     lobbyPlayerList.innerHTML = '';
 
     const isHost = room.hostId === socket.id;
+    // Mirror the server's ready flag (it survives rounds and reconnects)
+    const me = room.players.find(p => p.id === socket.id);
+    if (me) setReady(!!me.ready);
     btnLobbyStart.classList.toggle('hidden', !isHost);
     btnLobbyReady.classList.toggle('hidden', isHost); // the host starts instead of readying
     selectGameMode.disabled = !isHost;
@@ -350,6 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setStatus(res ? res.message : 'Could not get back into the room.');
         return;
       }
+      setStatus('');
       if (res.room.state === 'PLAYING') {
         currentRoom = res.room;
         uiOverlay.classList.add('hidden');
