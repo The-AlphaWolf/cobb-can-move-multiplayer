@@ -4,6 +4,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const socket = io();
   window.gameSocket = socket;
 
+  drawGrain();
+  drawJumpscareFace();
+
   // Browsers only start audio after the player interacts with the page
   document.addEventListener('pointerdown', () => window.Sound.unlock());
   document.addEventListener('keydown', () => window.Sound.unlock());
@@ -372,3 +375,68 @@ document.addEventListener('DOMContentLoaded', () => {
     setStatus('Pick a codename, then press JOIN ROOM.');
   }
 });
+
+// Film grain for the fear overlay: one tile of random noise, reused as a CSS background
+function drawGrain() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(128, 128);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = Math.random() * 255;
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+    img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  document.documentElement.style.setProperty('--grain-image', `url(${canvas.toDataURL()})`);
+}
+
+// Cobb's face up close (64x64 pixel art), shown when it grabs you: a long, crooked skull
+// with sunken cheeks, mismatched sockets and a grin far wider than the head
+function drawJumpscareFace() {
+  const ctx = document.getElementById('jumpscare-face').getContext('2d');
+  const px = (color, x, y, w = 1, h = 1) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, w, h);
+  };
+  // Filled ellipse, row by row, so it stays crisp pixel art
+  const blob = (color, cx, cy, rx, ry) => {
+    for (let y = -ry; y <= ry; y++) {
+      const half = Math.round(rx * Math.sqrt(1 - (y * y) / (ry * ry)));
+      px(color, cx - half, cy + y, half * 2 + 1, 1);
+    }
+  };
+  px('#000000', 0, 0, 64, 64);
+
+  // Skull: wide dome, cheeks pinched in, then a jaw stretched too far
+  blob('#3d0606', 32, 20, 17, 19);
+  blob('#3d0606', 32, 47, 22, 12);
+  px('#3d0606', 19, 34, 26, 8);
+  blob('#5a0b0b', 31, 16, 13, 12);   // light catching the brow
+  blob('#701010', 29, 10, 7, 5);
+  px('#1c0202', 17, 30, 5, 10);      // sunken cheeks
+  px('#1c0202', 42, 29, 5, 11);
+  [[25, 4, 9], [37, 6, 7], [31, 2, 5]].forEach(([x, y, h]) => px('#240303', x, y, 1, h)); // cracks
+
+  // Sockets that don't match, each with a pinprick of light
+  blob('#000000', 23, 21, 6, 5);
+  blob('#000000', 41, 19, 5, 6);
+  px('#ff3020', 22, 21, 3, 3);
+  px('#ffffff', 23, 22, 1, 1);
+  px('#ff3020', 41, 19, 2, 2);
+  px('#ffffff', 41, 19, 1, 1);
+
+  // Slits where a nose should be
+  px('#000000', 30, 29, 1, 5);
+  px('#000000', 33, 28, 1, 6);
+
+  // The grin: gums, a black throat and uneven, broken teeth
+  blob('#5a0000', 32, 46, 20, 8);
+  blob('#000000', 32, 47, 18, 6);
+  const tooth = (x, y, h, down) => px(x % 3 ? '#d9cfae' : '#b8ab84', x, down ? y : y - h, 2, h);
+  for (let x = 15; x < 49; x += 3) tooth(x, 41, 2 + (x * 7) % 5, true);
+  for (let x = 16; x < 48; x += 3) tooth(x, 53, 2 + (x * 5) % 4, false);
+
+  // Something dark running from the jaw
+  [18, 27, 36, 44].forEach((x, i) => px('#6a0000', x, 55, 1, 4 + ((i * 3) % 5)));
+}

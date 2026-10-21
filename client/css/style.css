@@ -37,8 +37,8 @@ html, body {
   height: 100vh;
   pointer-events: none;
   z-index: 100;
-  background: radial-gradient(circle at center, transparent 55%, rgba(0, 0, 0, 0.75) 100%);
-  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.9);
+  background: radial-gradient(circle at center, transparent 45%, rgba(0, 0, 0, 0.88) 100%);
+  box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.95);
 }
 
 /* Game Canvas */
@@ -722,4 +722,87 @@ select:disabled {
   border: 1px solid var(--accent-red);
   background: rgba(10, 11, 16, 0.9);
   animation: bannerPulse 1s infinite alternate ease-in-out;
+}
+
+/* ---------- Fear ---------- */
+:root {
+  --fear: 0;
+}
+
+/* Closes in, red at the edges, as Cobb approaches */
+.fear-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99;
+  opacity: var(--fear);
+  background: radial-gradient(circle at center, transparent 35%, rgba(90, 0, 0, 0.45) 75%, rgba(0, 0, 0, 0.75) 100%);
+  transition: opacity 0.25s linear;
+}
+
+/* Film grain: always faintly there, heavier when Cobb is near */
+.grain-overlay {
+  position: fixed;
+  inset: -50%;
+  pointer-events: none;
+  z-index: 101;
+  opacity: calc(0.12 + var(--fear) * 0.3);
+  background-image: var(--grain-image);
+  /* overlay keeps blacks black instead of greying them */
+  mix-blend-mode: overlay;
+  animation: grain 0.4s steps(4) infinite;
+}
+
+@keyframes grain {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-5%, 3%); }
+  50% { transform: translate(4%, -6%); }
+  75% { transform: translate(-3%, -2%); }
+  100% { transform: translate(6%, 4%); }
+}
+
+/* The grab: Cobb's face fills the screen for a moment */
+.jumpscare {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.jumpscare canvas {
+  width: 110vmin;
+  height: 110vmin;
+  image-rendering: pixelated;
+  animation: lunge 0.75s ease-out forwards, jitter 0.05s steps(2) infinite;
+}
+
+@keyframes lunge {
+  from { transform: scale(0.55); filter: brightness(1.3) contrast(1.4); }
+  to { transform: scale(1.2); filter: brightness(0.75) contrast(1.4); }
+}
+
+@keyframes jitter {
+  from { margin-left: -6px; }
+  to { margin-left: 6px; }
+}
+
+/* The title fails like a dying bulb */
+.glitch-title {
+  animation: dying-bulb 6s infinite;
+}
+
+@keyframes dying-bulb {
+  0%, 89%, 93%, 97%, 100% { opacity: 1; }
+  90%, 95% { opacity: 0.15; }
+  91% { opacity: 0.8; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grain-overlay, .glitch-title, .jumpscare canvas {
+    animation: none;
+  }
 }

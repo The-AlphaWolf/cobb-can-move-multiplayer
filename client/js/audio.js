@@ -91,14 +91,37 @@ window.Sound = (() => {
     };
     loops.fire = bed(320, 0.7);
     loops.breath = bed(500, 4);
+
+    // A low, slightly detuned drone under everything; it swells as Cobb gets close
+    const drone = ctx.createGain();
+    drone.gain.value = 0;
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 260;
+    lowpass.connect(drone).connect(master);
+    [55, 58.3, 82.4].forEach((f) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = f;
+      osc.connect(lowpass);
+      osc.start();
+    });
+    loops.drone = drone;
   }
 
-  function setLoop(name, level, breathing = false) {
+  function setLoop(name, level, breathing = false, max = 0.35) {
     if (!ready() || !loops[name]) return;
     let v = Math.max(0, Math.min(1, level));
     // Breathing swells in and out rather than hissing steadily
     if (breathing) v *= 0.5 + 0.5 * Math.sin(ctx.currentTime * 2.2);
-    loops[name].gain.setTargetAtTime(v * 0.35, ctx.currentTime, 0.1);
+    loops[name].gain.setTargetAtTime(v * max, ctx.currentTime, 0.1);
+  }
+
+  // A shriek: a rising saw over a band of hiss
+  function screech(gain, dur) {
+    tone({ freq: 700, to: 2600, dur, gain, type: 'sawtooth' });
+    tone({ freq: 740, to: 2300, dur, gain: gain * 0.7, type: 'square' });
+    burst({ freq: 3200, q: 2, dur, gain });
   }
 
   return {
@@ -107,6 +130,23 @@ window.Sound = (() => {
     isMuted: () => muted,
     setFire: level => setLoop('fire', level),
     setBreath: level => setLoop('breath', level, true),
+    // Always a faint unease; louder when Cobb is near
+    setDrone: (level, idle = 0.15) => setLoop('drone', idle + (1 - idle) * level, false, 0.22),
+    // Cobb's footfalls: slow, heavy, getting louder
+    cobbStep: level => burst({ freq: 110, q: 1, dur: 0.18, gain: 0.6 * level, type: 'lowpass' }),
+    // Cobb has seen you
+    chaseSting: () => screech(0.22, 0.5),
+    // The grab: a scream right in your ears
+    jumpscare: () => {
+      screech(0.5, 0.9);
+      burst({ freq: 150, q: 0.5, dur: 0.9, gain: 0.8, type: 'lowpass' });
+    },
+    // The building settling somewhere far away (or is it?)
+    creak: (level = 0.4) => {
+      tone({ freq: 190, to: 140, dur: 1.4, gain: 0.05 * level, type: 'sawtooth' });
+      burst({ freq: 900, q: 8, dur: 1.2, gain: 0.08 * level });
+    },
+    flicker: (level = 1) => burst({ freq: 4000, q: 12, dur: 0.05, gain: 0.08 * level }),
     footstep: (sprint, level = 1) => burst({ freq: sprint ? 900 : 600, q: 1.5, dur: 0.06, gain: 0.12 * level }),
     heartbeat: (level) => {
       tone({ freq: 60, to: 40, dur: 0.12, gain: 0.5 * level });

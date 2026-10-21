@@ -74,7 +74,7 @@ const CONSTANTS = {
     FURNACE_RADIUS: 240,   // at full fuel
     EMBER_RADIUS: 70,      // a cold furnace still glows a little
     BRAZIER_RADIUS: 130,   // room lamps powered by breakers
-    AMBIENT: 0x111118,
+    AMBIENT: 0x07070b,     // near-black: you see what your light shows you
     MAX_LIGHTS: 16
   },
   VERSUS: {

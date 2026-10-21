@@ -8,6 +8,7 @@ class BootScene extends Phaser.Scene {
     this.createWallTexture();
     this.createPlayerTexture();
     this.createCobbTexture();
+    this.createCobbEyesTexture();
     this.createCoalTexture();
     this.createFurnaceTexture();
     this.createBreakerTexture();
@@ -157,53 +158,82 @@ class BootScene extends Phaser.Scene {
     canvas.refresh();
   }
 
-  // Cobb The Monster (32x40) - Unsettling Red Stalker, long claws, piercing eyes
+  // Cobb (32x40): a hunched, starved red thing. Arms too long, hanging past its feet, a head
+  // that sits crooked, and a grin full of teeth. Its eyes are a separate texture so they can
+  // glow in the dark (see createCobbEyesTexture).
   createCobbTexture() {
     const canvas = this.textures.createCanvas('cobb_sprite', 32, 40);
     const ctx = canvas.context;
+    const px = (color, x, y, w = 1, h = 1) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, w, h);
+    };
 
-    // Ominous black puddle shadow
-    ctx.fillStyle = 'rgba(20, 0, 0, 0.6)';
+    // Shadow pooling under it
+    ctx.fillStyle = 'rgba(10, 0, 0, 0.7)';
     ctx.beginPath();
-    ctx.ellipse(16, 36, 11, 4, 0, 0, Math.PI * 2);
+    ctx.ellipse(16, 37, 12, 3, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Lanky Crimson Body
-    ctx.fillStyle = '#801818';
-    ctx.fillRect(11, 12, 10, 22);
+    // Spindly legs, knees bent the wrong way
+    px('#3d0808', 12, 28, 2, 6);
+    px('#3d0808', 18, 28, 2, 6);
+    px('#3d0808', 11, 34, 2, 3);
+    px('#3d0808', 19, 34, 2, 3);
 
-    // Dark ribcage contours
-    ctx.fillStyle = '#520d0d';
-    ctx.fillRect(13, 16, 6, 2);
-    ctx.fillRect(13, 20, 6, 2);
-    ctx.fillRect(13, 24, 6, 2);
+    // Hunched, starved torso with ribs showing
+    px('#5c0c0c', 11, 14, 10, 15);
+    px('#7a1212', 12, 13, 8, 3);
+    px('#2a0404', 13, 17, 6, 1);
+    px('#2a0404', 13, 20, 6, 1);
+    px('#2a0404', 13, 23, 6, 1);
+    px('#2a0404', 15, 17, 2, 9);
 
-    // Unsettling Elongated Head
-    ctx.fillStyle = '#9e2222';
-    ctx.fillRect(9, 2, 14, 11);
+    // Arms hang far past the knees and end in long claws
+    px('#4a0a0a', 7, 13, 3, 4);
+    px('#4a0a0a', 6, 16, 2, 16);
+    px('#4a0a0a', 22, 13, 3, 4);
+    px('#4a0a0a', 24, 16, 2, 16);
+    px('#d8d0c0', 4, 32, 1, 5);
+    px('#d8d0c0', 6, 33, 1, 5);
+    px('#d8d0c0', 8, 32, 1, 4);
+    px('#d8d0c0', 24, 32, 1, 4);
+    px('#d8d0c0', 26, 33, 1, 5);
+    px('#d8d0c0', 28, 32, 1, 5);
 
-    // Piercing Glowing White Eyes
+    // Long head tilted to one side
+    px('#8a1515', 9, 1, 13, 12);
+    px('#a51c1c', 10, 2, 11, 3);
+    px('#5c0c0c', 9, 10, 2, 3);
+
+    // Hollow sockets (the glow comes from the eyes texture)
+    px('#000000', 11, 4, 4, 4);
+    px('#000000', 17, 3, 4, 4);
+
+    // A grin too wide for the face, full of teeth
+    px('#120000', 10, 9, 12, 3);
+    for (let x = 10; x < 22; x += 2) {
+      px('#e8e0cc', x, 9, 1, 1);
+      px('#e8e0cc', x + 1, 11, 1, 1);
+    }
+    canvas.refresh();
+  }
+
+  // Cobb's eyes on their own (same 32x40 frame): drawn without lighting, so in the dark
+  // all you see is two pale points moving toward you
+  createCobbEyesTexture() {
+    const canvas = this.textures.createCanvas('cobb_eyes', 32, 40);
+    const ctx = canvas.context;
+    // A red bloom around each eye, then a white-hot core
+    ctx.fillStyle = 'rgba(255, 40, 30, 0.22)';
+    ctx.fillRect(9, 2, 8, 8);
+    ctx.fillRect(15, 1, 8, 8);
+    ctx.fillStyle = 'rgba(255, 70, 50, 0.5)';
+    ctx.fillRect(11, 4, 4, 4);
+    ctx.fillRect(17, 3, 4, 4);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(11, 5, 3, 4);
-    ctx.fillRect(18, 5, 3, 4);
-    // Yellow pupil dots
-    ctx.fillStyle = '#ffee55';
-    ctx.fillRect(12, 6, 1, 2);
-    ctx.fillRect(19, 6, 1, 2);
-
-    // Gaping black smile / jaw
-    ctx.fillStyle = '#1c0303';
-    ctx.fillRect(12, 10, 8, 2);
-
-    // Long spindly arms reaching downwards
-    ctx.fillStyle = '#6e1414';
-    ctx.fillRect(5, 12, 5, 24);
-    ctx.fillRect(22, 12, 5, 24);
-
-    // Sharp Red Claws
-    ctx.fillStyle = '#cc2b2b';
-    ctx.fillRect(4, 34, 6, 4);
-    ctx.fillRect(22, 34, 6, 4);
+    ctx.fillRect(12, 5, 2, 2);
+    ctx.fillRect(18, 4, 2, 2);
     canvas.refresh();
   }
 

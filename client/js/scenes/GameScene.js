@@ -93,6 +93,9 @@ class GameScene extends Phaser.Scene {
     this.padPrev = {};
     this.stepTimer = 0;
     this.beatTimer = 0;
+    this.cobbStepTimer = 0;
+    this.creakTimer = 8000 + Math.random() * 12000;
+    this.danger = 0; // 0..1, how close the nearest Cobb is
     // Click throws a rock at the pointer
     this.input.on('pointerdown', (pointer) => {
       if (this.status === 'active') this.throwRock(pointer.worldX, pointer.worldY);
@@ -239,6 +242,9 @@ class GameScene extends Phaser.Scene {
     sprite.setFlipX(c.flipX);
     sprite.targetX = c.x;
     sprite.targetY = c.y;
+    // Unlit eyes: in the dark, two pale points are all you see of it
+    sprite.eyes = this.add.image(c.x, c.y, 'cobb_eyes').setDepth(13).setBlendMode(Phaser.BlendModes.ADD);
+    sprite.blinkAt = this.time.now + 2000 + Math.random() * 3000;
     this.cobbs.set(c.id, sprite);
     return sprite;
   }
@@ -248,6 +254,7 @@ class GameScene extends Phaser.Scene {
     const face = c.mimicId && this.roomData.players.find(p => p.id === c.mimicId);
     const close = Phaser.Math.Distance.Between(sprite.x, sprite.y, this.player.x, this.player.y) < 90;
     const disguised = !!face && !close && c.state !== 'CHASE';
+    sprite.disguised = disguised;
     sprite.setTexture(disguised ? 'player_sprite' : 'cobb_sprite');
     if (disguised) sprite.setTint(face.color);
     if (!sprite.fakeLabel && face) {
@@ -267,9 +274,18 @@ class GameScene extends Phaser.Scene {
   // Tighter smoothing than for players: a Cobb drawn behind its real position makes grabs look unfair
   updateCobbs(delta) {
     const t = Math.min(1, delta / 40);
+    const now = this.time.now;
     this.cobbs.forEach((sprite) => {
       sprite.x += (sprite.targetX - sprite.x) * t;
       sprite.y += (sprite.targetY - sprite.y) * t;
+
+      // Eyes ride along, fade in from the dark as it nears, and now and then blink
+      const eyes = sprite.eyes;
+      eyes.setPosition(sprite.x, sprite.y).setFlipX(sprite.flipX).setAngle(sprite.angle);
+      if (now > sprite.blinkAt + 140) sprite.blinkAt = now + 2500 + Math.random() * 4000;
+      const d = Phaser.Math.Distance.Between(sprite.x, sprite.y, this.player.x, this.player.y);
+      const seen = !sprite.disguised && now < sprite.blinkAt;
+      eyes.setAlpha(seen ? Math.max(0, Math.min(1, 1.3 - d / 360)) * sprite.alpha : 0);
     });
   }
 
@@ -315,8 +331,27 @@ class GameScene extends Phaser.Scene {
     if (this.isCobb) return this.updateFurnaceLight(t);
     const L = window.CONSTANTS.LIGHTS;
     this.lanternLight.setRadius(this.status === 'downed' ? 60 : (this.lanternDim ? L.LANTERN_STEALTH : L.LANTERN_RADIUS));
-    this.lanternLight.setIntensity(lanternOn ? 1.9 + Math.sin(t / 150) * 0.12 : 0);
+    // Your lantern sputters when Cobb is close
+    const sputter = this.danger > 0.35 && Math.random() < this.danger * 0.25 ? Math.random() * 1.2 : 0;
+    this.lanternLight.setIntensity(lanternOn ? Math.max(0.3, 1.9 + Math.sin(t / 150) * 0.12 - sputter) : 0);
     this.updateFurnaceLight(t);
+    this.flickerLamps();
+  }
+
+  // Lamps stutter and die back when Cobb passes under them; very rarely, for no reason at all
+  flickerLamps() {
+    this.mapData.breakers.forEach((b) => {
+      if (!b.active) return;
+      this.lampLights.get(b.id).forEach((light) => {
+        let near = false;
+        this.cobbs.forEach((c) => {
+          if (Phaser.Math.Distance.Between(c.x, c.y, light.x, light.y) < 220) near = true;
+        });
+        const glitch = near ? Math.random() < 0.35 : Math.random() < 0.002;
+        light.setIntensity(glitch ? Math.random() * 0.6 : 1.6);
+        if (glitch && near && Math.random() < 0.1) window.Sound.flicker(this.volumeAt(light.x, light.y));
+      });
+    });
   }
 
   updateFurnaceLight(t) {
@@ -558,7 +593,29 @@ class GameScene extends Phaser.Scene {
     });
     const hunted = !this.isCobb && (this.status === 'active' || this.status === 'downed');
     const danger = hunted ? Math.max(0, 1 - nearest / 320) : 0;
+    this.danger = danger;
     S.setBreath(hunted ? Math.max(0, 1 - nearest / 380) : 0);
+    S.setDrone(hunted ? Math.max(0, 1 - nearest / 450) : 0);
+    this.updateFear();
+
+    // You hear Cobb walking before you see it
+    this.cobbStepTimer -= delta;
+    if (hunted && this.cobbStepTimer <= 0) {
+      let loudest = 0;
+      this.cobbs.forEach((c) => {
+        const moving = Math.abs(c.targetX - c.x) + Math.abs(c.targetY - c.y) > 1;
+        if (moving) loudest = Math.max(loudest, this.volumeAt(c.x, c.y, 480));
+      });
+      if (loudest > 0) S.cobbStep(loudest);
+      this.cobbStepTimer = 560;
+    }
+
+    // The building creaks now and then
+    this.creakTimer -= delta;
+    if (this.creakTimer <= 0) {
+      S.creak(0.3 + Math.random() * 0.5);
+      this.creakTimer = 15000 + Math.random() * 25000;
+    }
 
     const f = this.mapData.furnace;
     const toFire = Phaser.Math.Distance.Between(me.x, me.y, f.x, f.y);
@@ -576,6 +633,23 @@ class GameScene extends Phaser.Scene {
       S.footstep(me.isSprinting, this.isCobb ? 0.6 : 1);
       this.stepTimer = me.isSprinting ? 220 : 330;
     }
+  }
+
+  // The screen closes in as Cobb gets near: a red-black vignette, heavier grain, a tremor
+  updateFear() {
+    const d = this.danger;
+    document.documentElement.style.setProperty('--fear', d.toFixed(3));
+    if (d > 0.75 && Math.random() < 0.04) this.cameras.main.shake(120, 0.003 + d * 0.004);
+  }
+
+  // A full-screen face and a scream, for whoever Cobb just grabbed
+  showJumpscare() {
+    const el = document.getElementById('jumpscare');
+    el.classList.remove('hidden');
+    window.Sound.jumpscare();
+    this.cameras.main.shake(600, 0.05);
+    clearTimeout(el.hideTimer);
+    el.hideTimer = setTimeout(() => el.classList.add('hidden'), 750);
   }
 
   // Volume for a sound at a world point, fading out by `range` px
@@ -906,7 +980,10 @@ class GameScene extends Phaser.Scene {
         this.applyPlayerState(data.id, 'escaped');
       },
       'player:downed': (data) => {
-        if (data.id === this.myId) window.Sound.grab();
+        if (data.id === this.myId) {
+          if (data.cause === 'COBB') this.showJumpscare();
+          else window.Sound.grab();
+        }
         this.applyPlayerState(data.id, 'downed');
       },
       'player:revived': (data) => {
@@ -997,7 +1074,11 @@ class GameScene extends Phaser.Scene {
           this.applyMimic(sprite, c);
           // Jolt the camera the moment Cobb locks on to us
           const chasingMe = c.state === 'CHASE' && c.targetId === this.myId;
-          if (chasingMe && !sprite.chasingMe) this.cameras.main.shake(150, 0.01);
+          if (chasingMe && !sprite.chasingMe) {
+            this.cameras.main.shake(250, 0.012);
+            this.cameras.main.flash(180, 120, 0, 0);
+            window.Sound.chaseSting();
+          }
           sprite.chasingMe = chasingMe;
         });
 
@@ -1057,6 +1138,13 @@ class GameScene extends Phaser.Scene {
     const detach = () => Object.entries(handlers).forEach(([event, fn]) => this.socket.off(event, fn));
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, detach);
     this.events.once(Phaser.Scenes.Events.DESTROY, detach);
+    // Don't leave the screen tinted, or the drone running, after the round
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => {
+      document.documentElement.style.setProperty('--fear', '0');
+      window.Sound.setDrone(0, 0);
+      window.Sound.setBreath(0);
+      window.Sound.setFire(0);
+    });
   }
 
   // Show a coal chunk where the server says it is, or remove it once collected
