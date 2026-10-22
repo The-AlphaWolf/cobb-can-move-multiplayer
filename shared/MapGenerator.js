@@ -65,12 +65,13 @@ class MapGenerator {
     const rooms = [room(0, 'Furnace Hub',
       Math.floor((width - hw) / 2) + this.randInt(-2, 2),
       Math.floor((height - hh) / 2) + this.randInt(-2, 2), hw, hh)];
-    const target = width * height > 2000 ? 10 : 8;
+    // About one wing per 230 tiles: 12 on the smallest procedural map, 22 on the largest
+    const target = Math.min(24, Math.round((width * height) / 230));
     const overlaps = (r) => rooms.some(o =>
       r.x < o.x + o.w + 3 && o.x < r.x + r.w + 3 && r.y < o.y + o.h + 3 && o.y < r.y + r.h + 3);
-    for (let i = 0; i < 400 && rooms.length < target; i++) {
-      const w = this.randInt(7, 11);
-      const h = this.randInt(6, 9);
+    for (let i = 0; i < 1500 && rooms.length < target; i++) {
+      const w = this.randInt(7, 12);
+      const h = this.randInt(6, 10);
       const r = room(rooms.length, `Wing ${String.fromCharCode(64 + rooms.length)}`,
         this.randInt(2, width - w - 2), this.randInt(2, height - h - 2), w, h);
       if (!overlaps(r)) rooms.push(r);
@@ -97,8 +98,10 @@ class MapGenerator {
     rooms.forEach((a, i) => rooms.forEach((b, j) => {
       if (i < j && !linked.has(`${i}-${j}`)) extra.push({ i, j, d: dist(a, b) });
     }));
-    // Loops that bypass the hub, so the facility is still a circuit while the fire burns
-    extra.filter(e => e.i !== 0 && e.j !== 0).sort((a, b) => a.d - b.d).slice(0, 3).forEach(e => edges.push([e.i, e.j]));
+    // Loops that bypass the hub, so the facility is still a circuit while the fire burns.
+    // Roughly one extra link per three wings: plenty of ways around a Cobb in your path.
+    const loops = Math.max(3, Math.ceil(rooms.length / 3));
+    extra.filter(e => e.i !== 0 && e.j !== 0).sort((a, b) => a.d - b.d).slice(0, loops).forEach(e => edges.push([e.i, e.j]));
 
     const corridor = (a, b) => {
       const horizontalFirst = this.random() < 0.5;
@@ -220,8 +223,9 @@ class MapGenerator {
       });
     }
 
-    const rockTiles = pick(width * height > 2000 ? 8 : 6, tilesOf(rooms), 3, (x, y) => steps[y][x] >= 4);
-    const carrotTiles = pick(4, tilesOf(wings), 5);
+    // More floor, more rocks to throw and carrots to find
+    const rockTiles = pick(Math.round((width * height) / 400), tilesOf(rooms), 3, (x, y) => steps[y][x] >= 4);
+    const carrotTiles = pick(Math.max(4, Math.round((width * height) / 650)), tilesOf(wings), 5);
     if (!rockTiles || !carrotTiles) return null;
 
     return {

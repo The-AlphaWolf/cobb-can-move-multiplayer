@@ -1211,9 +1211,10 @@ class GameScene extends Phaser.Scene {
   initMinimap() {
     this.minimapCanvas = document.getElementById('minimap-canvas');
     if (!this.minimapCanvas) return;
-    // 4 px per tile, whatever this level's map size is
-    this.minimapCanvas.width = this.mapData.width * 4;
-    this.minimapCanvas.height = this.mapData.height * 4;
+    // As many px per tile as fit the radar's usual width (4 on the intro map, 2 on the biggest)
+    this.minimapScale = Math.max(2, Math.min(4, Math.floor(184 / this.mapData.width)));
+    this.minimapCanvas.width = this.mapData.width * this.minimapScale;
+    this.minimapCanvas.height = this.mapData.height * this.minimapScale;
     this.minimapCtx = this.minimapCanvas.getContext('2d');
     this.minimapUpdateTimer = 0;
 
@@ -1236,7 +1237,7 @@ class GameScene extends Phaser.Scene {
     const ctx = this.minimapCtx;
     const w = this.minimapCanvas.width;
     const h = this.minimapCanvas.height;
-    const scale = 4; // px per tile; initMinimap sizes the canvas to match
+    const scale = this.minimapScale;
 
     ctx.fillStyle = '#05060a';
     ctx.fillRect(0, 0, w, h);

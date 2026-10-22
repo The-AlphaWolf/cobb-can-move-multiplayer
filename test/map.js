@@ -32,7 +32,7 @@ assert.deepStrictEqual(a, b, 'generation must be deterministic per seed');
 assert.notDeepStrictEqual(a.grid, new MapGenerator(1235).generate(46, 36).grid, 'different seeds should differ');
 
 let slowest = 0;
-for (const size of [CONSTANTS.MAP.SMALL, CONSTANTS.MAP.LARGE]) {
+for (const size of CONSTANTS.MAP_TIERS) {
   for (let seed = 1; seed <= 300; seed++) {
     const started = Date.now();
     const fireZone = CONSTANTS.LIGHTS.FURNACE_RADIUS * CONSTANTS.FURNACE.SAFE_SHARE;
@@ -83,7 +83,7 @@ for (const size of [CONSTANTS.MAP.SMALL, CONSTANTS.MAP.LARGE]) {
     });
   }
 }
-assert(slowest < 200, `generation too slow: ${slowest} ms`);
+assert(slowest < 400, `generation too slow: ${slowest} ms`);
 
 // 6. The level 1 facility is unchanged
 const classic = new MapGenerator(1).classic();

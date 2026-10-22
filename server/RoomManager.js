@@ -19,11 +19,13 @@ class RoomManager {
     return this.rooms.has(code) ? this.generateRoomCode() : code;
   }
 
-  // Level 1 is the fixed intro facility; later levels get a fresh layout, bigger for bigger teams
-  generateMap(level = 1, playerCount = 1) {
+  // Level 1 is the fixed intro facility; later levels get a fresh layout, a size bigger for
+  // 3-4 players and a size bigger again for each extra Cobb hunting (DUPLICATE)
+  generateMap(level = 1, playerCount = 1, cobbCount = 1) {
     const gen = new MapGenerator((Date.now() ^ (Math.random() * 0x100000000)) >>> 0);
     if (level <= 1) return gen.classic();
-    const size = playerCount > 2 ? CONSTANTS.MAP.LARGE : CONSTANTS.MAP.SMALL;
+    const tiers = CONSTANTS.MAP_TIERS;
+    const size = tiers[Math.min(tiers.length - 1, (playerCount > 2 ? 1 : 0) + (cobbCount - 1))];
     const fireZone = CONSTANTS.LIGHTS.FURNACE_RADIUS * CONSTANTS.FURNACE.SAFE_SHARE; // the zone at its largest
     try {
       return gen.generate(size.width, size.height, { coalCount: size.coal, fireZone });
@@ -120,10 +122,6 @@ class RoomManager {
   // Fresh map, Cobb and player state for a new round
   startRound(room) {
     const now = Date.now();
-    room.mapData = this.generateMap(room.level, room.players.size);
-    room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
-    room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
-    room.walk = buildWalkGrid(room.mapData, room.safeRadius);
     const players = Array.from(room.players.values());
     if (room.rulesLevel !== room.level || room.rulesMode !== room.mode) {
       room.activeRules = rollRules(room.level, Math.random, { mode: room.mode, players: players.length });
@@ -131,6 +129,10 @@ class RoomManager {
       room.rulesMode = room.mode;
     }
     room.cfg = ruleConfig(room.activeRules, room.level);
+    room.mapData = this.generateMap(room.level, room.players.size, room.cfg.cobbCount);
+    room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
+    room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
+    room.walk = buildWalkGrid(room.mapData, room.safeRadius);
     room.cobbs = createCobbs(room.mapData, now, room.cfg.cobbCount);
     room.noises = [];
     room.nextRockId = 0;

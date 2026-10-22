@@ -147,4 +147,25 @@ assert.strictEqual(room('coop', 3).r.mapData.furnace.coalRequired, 6);
   assert(roundResult(r), 'once the seat is gone the round can end');
 }
 
+// 10. More Cobbs, more map: every extra Cobb steps the facility up a size
+{
+  const width = (players, rules, level) => {
+    const rm = new RoomManager();
+    const r = rm.createRoom('p0');
+    for (let i = 0; i < players; i++) rm.addPlayer(r.code, `p${i}`, {});
+    r.level = level;
+    r.rulesLevel = level;
+    r.rulesMode = r.mode;
+    r.activeRules = rules;
+    rm.startRound(r);
+    return r.mapData.width;
+  };
+  const tiers = CONSTANTS.MAP_TIERS.map(t => t.width);
+  assert.strictEqual(width(1, ['MOVE', 'SEE'], 3), tiers[0]);
+  assert.strictEqual(width(1, ['MOVE', 'DUPLICATE'], 3), tiers[1], 'two Cobbs: one size up');
+  assert.strictEqual(width(1, ['MOVE', 'DUPLICATE'], 6), tiers[2], 'three Cobbs: the biggest map');
+  assert.strictEqual(width(4, ['MOVE', 'SEE'], 3), tiers[1], 'a full team: one size up');
+  assert.strictEqual(width(1, ['MOVE'], 1), 46, 'level 1 stays the intro facility');
+}
+
 console.log('PASS modes');
