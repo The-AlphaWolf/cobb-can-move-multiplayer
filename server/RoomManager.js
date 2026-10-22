@@ -131,6 +131,9 @@ class RoomManager {
     room.cfg = ruleConfig(room.activeRules, room.level);
     room.mapData = this.generateMap(room.level, room.players.size, room.cfg.cobbCount);
     room.mapData.furnace.fuel = CONSTANTS.FURNACE.START_FUEL;
+    // Bigger facility, longer coal runs: the fire burns slower in step with how far you walk
+    // (trip length grows with the square root of the area; level 1's 46x36 burns at full speed)
+    room.mapData.furnace.burnRate = Math.sqrt((46 * 36) / (room.mapData.width * room.mapData.height));
     room.safeRadius = CONSTANTS.safeRadius(room.mapData.furnace.fuel);
     room.walk = buildWalkGrid(room.mapData, room.safeRadius);
     room.cobbs = createCobbs(room.mapData, now, room.cfg.cobbCount);

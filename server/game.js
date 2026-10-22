@@ -100,7 +100,7 @@ function throwRock(room, p, target, now) {
 // only when the zone's edge crosses into a different tile ring.
 function burnFuel(room, dtMs) {
   const f = room.mapData.furnace;
-  f.fuel = Math.max(0, f.fuel - dtMs);
+  f.fuel = Math.max(0, f.fuel - dtMs * (f.burnRate || 1));
   const radius = CONSTANTS.safeRadius(f.fuel);
   if (Math.floor(radius / 16) !== Math.floor((room.safeRadius || 0) / 16)) {
     room.walk = buildWalkGrid(room.mapData, radius);

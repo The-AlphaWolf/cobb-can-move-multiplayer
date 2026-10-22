@@ -168,4 +168,23 @@ assert.strictEqual(room('coop', 3).r.mapData.furnace.coalRequired, 6);
   assert.strictEqual(width(1, ['MOVE'], 1), 46, 'level 1 stays the intro facility');
 }
 
+// 11. The fire lasts longer on bigger maps
+{
+  const burned = (rules, level) => {
+    const rm = new RoomManager();
+    const r = rm.createRoom('p0');
+    rm.addPlayer(r.code, 'p0', {});
+    Object.assign(r, { level, rulesLevel: level, rulesMode: r.mode, activeRules: rules });
+    rm.startRound(r);
+    r.cobbs = [];
+    const before = r.mapData.furnace.fuel;
+    tickRoom(r, 10000, Date.now());
+    return before - r.mapData.furnace.fuel;
+  };
+  assert.strictEqual(burned(['MOVE'], 1), 10000, 'the intro map burns at full speed');
+  const small = burned(['MOVE', 'SEE'], 3);
+  const big = burned(['MOVE', 'DUPLICATE'], 6);
+  assert(small < 10000 && big < small, `bigger maps should burn slower (${small} vs ${big})`);
+}
+
 console.log('PASS modes');
